@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>axe-mcp smoke test &mdash; intentionally inaccessible</title>
+  </head>
+  <body>
+    <!-- Each element below trips a well-known axe rule -->
+    <img src="logo.png" />                          <!-- image-alt -->
+    <a href="#"></a>                                <!-- link-name -->
+    <input type="text" />                           <!-- label -->
+    <button></button>                               <!-- button-name -->
+    <p style="color:#bbbbbb;background:#cccccc">low contrast text</p>  <!-- color-contrast -->
+    <div id="dup"></div>
+    <div id="dup"></div>                            <!-- duplicate-id -->
+    <h3>Skipped heading level</h3>                  <!-- heading-order (no h1/h2) -->
+  </body>
+  <!-- missing <html lang> -> html-has-lang -->
+</html>

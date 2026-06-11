@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>axe-mcp Guided Tests fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; color: #222; }
+      header, nav, main, footer { padding: 12px 20px; }
+      header { background: #1b2a4a; color: #fff; }
+      nav { background: #eef; }
+      .card { border: 1px solid #ccc; padding: 12px; margin: 12px 0; border-radius: 6px; }
+      table { border-collapse: collapse; margin: 8px 0; }
+      th, td { border: 1px solid #999; padding: 6px 10px; }
+      .fakebtn { display: inline-block; background: #2a6; color: #fff; padding: 8px 14px; border-radius: 4px; cursor: pointer; }
+      .lowcontrast { color: #b9b9b9; background: #cfcfcf; padding: 4px; }
+      dialog::backdrop { background: rgba(0,0,0,.4); }
+      img { width: 64px; height: 64px; vertical-align: middle; }
+      label { display: inline-block; min-width: 120px; }
+    </style>
+  </head>
+  <body>
+    <!-- ===== Structure / landmarks IGT: header, nav, main, footer ===== -->
+    <header><h1>Acme Widgets — Guided Test Fixture</h1></header>
+    <nav aria-label="Primary"><a href="#products">Products</a> · <a href="#contact">Contact</a></nav>
+
+    <main>
+      <!-- ===== Images IGT ===== -->
+      <section class="card" id="images" aria-labelledby="images-h">
+        <h2 id="images-h">Images</h2>
+        <!-- informative, good alt -->
+        <img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><rect width='64' height='64' fill='%232a6'/><text x='32' y='38' font-size='28' text-anchor='middle' fill='white'>%E2%9C%93</text></svg>" alt="In stock" />
+        <!-- decorative, empty alt -->
+        <img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><rect width='64' height='64' fill='%23ddd'/></svg>" alt="" />
+        <!-- VIOLATION: missing alt -->
+        <img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><circle cx='32' cy='32' r='30' fill='%23e2a400'/></svg>" />
+        <!-- BAD alt: filename -->
+        <img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><rect width='64' height='64' fill='%23c33'/></svg>" alt="IMG_4821.png" />
+      </section>
+
+      <!-- ===== Structure IGT: heading order (skips h2 -> h4) ===== -->
+      <section class="card" id="structure" aria-labelledby="structure-h">
+        <h2 id="structure-h">Structure</h2>
+        <h4>Skipped from h2 to h4 (heading-order issue)</h4>
+        <p>Body copy. <span class="lowcontrast">Low-contrast note.</span></p>
+        <ul><li>List item one</li><li>List item two</li></ul>
+      </section>
+
+      <!-- ===== Table IGT: a data table with headers + a header-less one ===== -->
+      <section class="card" id="tables" aria-labelledby="tables-h">
+        <h3 id="tables-h">Tables</h3>
+        <table>
+          <caption>Quarterly sales (proper data table)</caption>
+          <thead><tr><th scope="col">Quarter</th><th scope="col">Units</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Q1</th><td>120</td></tr>
+            <tr><th scope="row">Q2</th><td>98</td></tr>
+          </tbody>
+        </table>
+        <table>
+          <tr><td>No headers</td><td>at all</td></tr>
+          <tr><td>ambiguous</td><td>data table</td></tr>
+        </table>
+      </section>
+
+      <!-- ===== Forms IGT: labeled, unlabeled, select, required ===== -->
+      <section class="card" id="forms" aria-labelledby="forms-h">
+        <h3 id="forms-h">Form</h3>
+        <form>
+          <p><label for="name">Full name</label><input id="name" type="text" /></p>
+          <!-- VIOLATION: no label -->
+          <p><input type="email" placeholder="email (no label)" /></p>
+          <p><label for="qty">Quantity</label>
+             <select id="qty"><option>1</option><option>2</option></select></p>
+          <p><label for="terms"><input id="terms" type="checkbox" /> Accept terms</label></p>
+          <p><button type="submit">Submit</button></p>
+        </form>
+      </section>
+
+      <!-- ===== Interactive Elements IGT: real vs fake controls ===== -->
+      <section class="card" id="interactive" aria-labelledby="inter-h">
+        <h3 id="inter-h">Interactive elements</h3>
+        <button type="button" onclick="alert('real button')">Real button</button>
+        <!-- fake button: div with click handler, no role/tabindex (violation) -->
+        <div class="fakebtn" onclick="alert('fake button')">Fake button (div)</div>
+        <!-- custom button done right -->
+        <div class="fakebtn" role="button" tabindex="0">ARIA button</div>
+        <a href="#products">A real link</a>
+        <!-- VIOLATION: empty link -->
+        <a href="#"></a>
+      </section>
+
+      <!-- ===== Modal Dialog IGT ===== -->
+      <section class="card" id="dialogs" aria-labelledby="dialog-h">
+        <h3 id="dialog-h">Modal dialog</h3>
+        <button type="button" id="openDlg">Open dialog</button>
+        <dialog id="dlg" aria-labelledby="dlg-title">
+          <h2 id="dlg-title">Confirm action</h2>
+          <p>This is a modal dialog. Tab should stay trapped inside.</p>
+          <button type="button" id="closeDlg">Close</button>
+        </dialog>
+      </section>
+
+      <!-- ===== Keyboard IGT: positive tabindex (bad) + focusable controls ===== -->
+      <section class="card" id="keyboard" aria-labelledby="kbd-h">
+        <h3 id="kbd-h">Keyboard</h3>
+        <button type="button">First (natural order)</button>
+        <button type="button" tabindex="3">Third — positive tabindex (anti-pattern)</button>
+        <button type="button">Second (natural order)</button>
+      </section>
+    </main>
+
+    <footer id="contact"><p>© 2026 Acme. <a href="#">Contact us</a></p></footer>
+
+    <script>
+      const dlg = document.getElementById('dlg');
+      document.getElementById('openDlg').addEventListener('click', () => dlg.showModal());
+      document.getElementById('closeDlg').addEventListener('click', () => dlg.close());
+    </script>
+  </body>
+</html>
