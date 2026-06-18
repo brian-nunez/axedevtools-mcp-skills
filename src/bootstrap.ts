@@ -1,13 +1,39 @@
 #!/usr/bin/env node
 import { startBrowser, waitForCdp } from "./browser.js";
-import { configureAxeExtension } from "./extension.js";
+import { completeAxeOnboarding, configureAxeExtension, showAxeDevToolsPanel } from "./extension.js";
 import { waitForAndCloseInstallSuccess } from "./setup.js";
+import { CDP } from "./cdp.js";
+import { writeFile } from "node:fs/promises";
 
-const targetUrl = process.env.TARGET_URL || process.env.AXE_TARGET_URL || "about:blank";
+const targetUrl = process.env.TARGET_URL || process.env.AXE_TARGET_URL;
 const port = Number(process.env.AXE_CDP_PORT || 9222);
 const endpoint = process.env.AXE_CDP_ENDPOINT || `http://127.0.0.1:${port}`;
 
+async function verifyPreparedBrowser(endpoint: string, targetUrl: string) {
+  const cdp = await CDP.connect(endpoint);
+  try {
+    const targets = await cdp.targets();
+    const pages = targets.filter((t) => t.type === "page");
+    const page = pages.find((t) => t.url.includes(targetUrl) || t.url === targetUrl) ?? pages.find((t) => /^https?:/.test(t.url));
+    const devtools = targets.find((t) => /devtools_app\.html/.test(t.url));
+    const axePanel = targets.find((t) => /lhdoppoj.*panel\.html/.test(t.url));
+    return {
+      ok: !!page && !!devtools && !!axePanel,
+      pageUrl: page?.url ?? null,
+      devtoolsUrl: devtools?.url ?? null,
+      axePanelUrl: axePanel?.url ?? null,
+      targetCount: targets.length,
+    };
+  } finally {
+    cdp.close();
+  }
+}
+
 async function main() {
+  if (!targetUrl) {
+    throw new Error("TARGET_URL or AXE_TARGET_URL is required for startup preparation.");
+  }
+
   const info = startBrowser({ url: targetUrl, port });
   const cdpReady = await waitForCdp(info.endpoint, 45_000);
   console.error(`[axe-mcp] chromium pid=${info.pid} cdp=${info.endpoint} ready=${cdpReady} target=${targetUrl}`);
@@ -15,6 +41,20 @@ async function main() {
 
   const installSuccess = await waitForAndCloseInstallSuccess(info.endpoint, Number(process.env.AXE_INSTALL_SUCCESS_WAIT_MS || 20_000));
   console.error(`[axe-mcp] axe install-success tab: ${JSON.stringify(installSuccess)}`);
+
+  let onboarding = await completeAxeOnboarding(info.endpoint, Number(process.env.AXE_ONBOARDING_WAIT_MS || 20_000));
+  console.error(`[axe-mcp] axe onboarding before panel: ${JSON.stringify(onboarding)}`);
+
+  const axePanel = await showAxeDevToolsPanel(info.endpoint);
+  console.error(`[axe-mcp] axe DevTools panel: ${JSON.stringify(axePanel)}`);
+  if (!axePanel.panelShown || !axePanel.panelTargetFound) {
+    throw new Error(`Failed to open the axe DevTools panel: ${JSON.stringify(axePanel)}`);
+  }
+
+  if (!onboarding.completed) {
+    onboarding = await completeAxeOnboarding(info.endpoint, Number(process.env.AXE_ONBOARDING_PANEL_WAIT_MS || 15_000));
+    console.error(`[axe-mcp] axe onboarding after panel: ${JSON.stringify(onboarding)}`);
+  }
 
   if (process.env.AXE_LOGIN_EMAIL && process.env.AXE_LOGIN_PASSWORD) {
     const result = await configureAxeExtension({
@@ -31,9 +71,48 @@ async function main() {
   } else {
     console.error("[axe-mcp] AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set; skipping extension login bootstrap");
   }
+
+  const prepared = await verifyPreparedBrowser(info.endpoint, targetUrl);
+  console.error(`[axe-mcp] prepared desktop state: ${JSON.stringify(prepared)}`);
+  if (!prepared.ok) {
+    throw new Error(`Desktop/browser startup did not reach prepared state: ${JSON.stringify(prepared)}`);
+  }
+
+  await writeFile(
+    "/tmp/axe-mcp/ready.json",
+    JSON.stringify(
+      {
+        ready: true,
+        targetUrl,
+        cdpEndpoint: info.endpoint,
+        browserPid: info.pid,
+        installSuccess,
+        onboarding,
+        axePanel,
+        prepared,
+        readyAt: new Date().toISOString(),
+      },
+      null,
+      2
+    )
+  );
+  console.error("[axe-mcp] startup preparation complete; browser is ready for the agent");
 }
 
 main().catch((error) => {
   console.error("[axe-mcp] bootstrap failed:", error?.stack || error?.message || error);
-  process.exit(1);
+  writeFile(
+    "/tmp/axe-mcp/bootstrap-error.json",
+    JSON.stringify(
+      {
+        ready: false,
+        error: error?.stack || error?.message || String(error),
+        failedAt: new Date().toISOString(),
+      },
+      null,
+      2
+    )
+  )
+    .catch(() => {})
+    .finally(() => process.exit(1));
 });

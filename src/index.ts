@@ -12,7 +12,7 @@ import { captureElement, capturePage, mediaAudit, inventory } from "./visual.js"
 import { runScript, scriptsAvailable, SCRIPTS_DIR } from "./igt.js";
 import { structureAudit } from "./structure.js";
 import { setupEnvironment } from "./setup.js";
-import { configureAxeExtension } from "./extension.js";
+import { configureAxeExtension, showAxeDevToolsPanel } from "./extension.js";
 
 const DEFAULT_ENDPOINT = process.env.AXE_CDP_ENDPOINT || "http://127.0.0.1:9222";
 let lastPid: number | null = null;
@@ -61,6 +61,22 @@ server.registerTool(
       email: a.email || process.env.AXE_LOGIN_EMAIL,
       password: a.password || process.env.AXE_LOGIN_PASSWORD,
     });
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.registerTool(
+  "axe_open_devtools_panel",
+  {
+    title: "Open the axe DevTools panel",
+    description:
+      "Shows Chrome DevTools for the inspected page and selects the axe DevTools extension panel. Use this to repair the visible noVNC state before IGT work.",
+    inputSchema: {
+      cdpEndpoint: z.string().optional().describe(`CDP endpoint. Default ${DEFAULT_ENDPOINT}.`),
+    },
+  },
+  async (a) => {
+    const r = await showAxeDevToolsPanel(a.cdpEndpoint || DEFAULT_ENDPOINT);
     return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
   }
 );

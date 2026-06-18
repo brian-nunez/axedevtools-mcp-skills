@@ -116,10 +116,21 @@ echo "[axe-mcp] MCP Streamable HTTP listening on :${MCP_PORT}/mcp; CDP on :${AXE
 echo "[axe-mcp] axe extension directory: ${AXE_EXTENSION_DIR:-/opt/axe-extension}" >&2
 echo "[axe-mcp] runtime user: $(id -un) ($(id -u):$(id -g))" >&2
 
-if [[ -n "${TARGET_URL:-${AXE_TARGET_URL:-}}" ]]; then
-  node /app/dist/bootstrap.js
-else
-  echo "[axe-mcp] TARGET_URL/AXE_TARGET_URL not set; browser will start when setup_environment is called" >&2
+if [[ -z "${TARGET_URL:-${AXE_TARGET_URL:-}}" ]]; then
+  echo "[axe-mcp] FATAL: TARGET_URL or AXE_TARGET_URL is required. Startup must prepare the browser before the agent connects." >&2
+  exit 64
+fi
+
+set +e
+node /app/dist/bootstrap.js
+bootstrap_code=$?
+set -e
+if [[ "${bootstrap_code}" != "0" ]]; then
+  echo "[axe-mcp] browser preparation failed with exit code ${bootstrap_code}; keeping container alive for visual validation." >&2
+  echo "[axe-mcp] Open noVNC at http://127.0.0.1:${NOVNC_PORT}/ and inspect logs with: docker logs ${HOSTNAME}" >&2
+  if [[ "${STRICT_STARTUP:-0}" = "1" ]]; then
+    exit "${bootstrap_code}"
+  fi
 fi
 
 exec "$@"

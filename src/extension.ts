@@ -6,29 +6,128 @@ const DEEP =
   "function deep(sel,root,acc){try{root.querySelectorAll(sel).forEach(e=>acc.push(e))}catch(_){}" +
   "for(const e of root.querySelectorAll('*'))if(e.shadowRoot)deep(sel,e.shadowRoot,acc);return acc;}";
 
+export async function showAxeDevToolsPanel(endpoint: string) {
+  const cdp = await CDP.connect(endpoint);
+  try {
+    const panelShown = await showAxePanel(cdp);
+    const panel = panelShown ? await panelTarget(cdp) : null;
+    return { panelShown, panelTargetFound: !!panel, panelUrl: panel?.url ?? null };
+  } finally {
+    cdp.close();
+  }
+}
+
+export async function completeAxeOnboarding(endpoint: string, timeoutMs = 20_000) {
+  const cdp = await CDP.connect(endpoint);
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      const targets = await cdp.targets();
+      const candidates = targets
+        .filter(
+          (t) =>
+            (t.type === "page" || t.type === "iframe") &&
+            (/chrome-extension:\/\/lhdoppoj/i.test(t.url) || /axe\.deque\.com|deque\.com/i.test(t.url))
+        )
+        .sort((a, b) => Number(/panel\.html/i.test(b.url)) - Number(/panel\.html/i.test(a.url)));
+      for (const target of candidates) {
+        let session: string | null = null;
+        try {
+          session = await cdp.attach(target.targetId);
+          const result = await cdp
+            .evalIn(session, onboardingExpr())
+            .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+            .catch((e) => ({ attempted: false, error: e.message }));
+          await cdp.detach(session);
+          session = null;
+          if (result?.completed || result?.attempted) {
+            return { ...result, targetUrl: target.url };
+          }
+        } catch {
+          if (session) await cdp.detach(session).catch(() => {});
+        }
+      }
+      await sleep(500);
+    }
+    return { attempted: false, completed: false, reason: "onboarding controls not found before timeout" };
+  } finally {
+    cdp.close();
+  }
+}
+
 async function showAxePanel(cdp: CDP) {
   for (let i = 0; i < 40; i++) {
     const fes = (await cdp.targets()).filter((t) => FE_RE.test(t.url));
     for (const fe of fes) {
-      const session = await cdp.attach(fe.targetId);
-      const panelId = await cdp
-        .evalIn(
-          session,
-          `(()=>Object.keys((globalThis.UI&&globalThis.UI.panels)||{}).find(k=>/axe/i.test(k))||null)()`
-        )
-        .catch(() => null);
-      if (panelId) {
-        await cdp
-          .evalIn(session, `(()=>{try{InspectorFrontendAPI.showPanel(${JSON.stringify(panelId)});return true}catch(e){return false}})()`)
-          .catch(() => false);
-        await cdp.detach(session);
-        return true;
+      let session: string | null = null;
+      try {
+        session = await cdp.attach(fe.targetId);
+        const panelId = await cdp
+          .evalIn(
+            session,
+            `(()=>Object.keys((globalThis.UI&&globalThis.UI.panels)||{}).find(k=>/axe/i.test(k))||null)()`
+          )
+          .catch(() => null);
+        if (panelId) {
+          await cdp
+            .evalIn(session, `(()=>{try{InspectorFrontendAPI.showPanel(${JSON.stringify(panelId)});return true}catch(e){return false}})()`)
+            .catch(() => false);
+          await cdp.send("Target.activateTarget", { targetId: fe.targetId }).catch(() => {});
+          await cdp.detach(session);
+          return true;
+        }
+      } catch {
+        // DevTools front-end targets are transient while Chrome closes the
+        // install-success tab and rebinds DevTools to the inspected page.
+        // Ignore stale targets and continue polling.
+      } finally {
+        if (session) await cdp.detach(session).catch(() => {});
       }
-      await cdp.detach(session);
     }
     await sleep(500);
   }
   return false;
+}
+
+function onboardingExpr() {
+  return `(async()=> {
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
+    const role=document.getElementById('user-job-role');
+    const terms=document.getElementById('terms-and-services-checkbox');
+    const text=e=>((e.getAttribute&&e.getAttribute('aria-label'))||e.textContent||'').replace(/\\s+/g,' ').trim();
+    const buttons=[...document.querySelectorAll('button,[role=button]')];
+    const start=buttons.find(b=>/Start using axe DevTools/i.test(text(b)));
+    if(!role && !terms && !start) {
+      return JSON.stringify({attempted:false, completed:false});
+    }
+    if(!role || !terms || !start) {
+      return JSON.stringify({
+        attempted:true,
+        completed:false,
+        reason:'missing onboarding controls',
+        found:{role:!!role, terms:!!terms, start:!!start},
+        buttons:buttons.map(text).filter(Boolean).slice(0,20)
+      });
+    }
+    role.focus();
+    role.value='Developer';
+    role.dispatchEvent(new Event('input',{bubbles:true}));
+    role.dispatchEvent(new Event('change',{bubbles:true}));
+    if(!terms.checked) {
+      terms.click();
+      terms.dispatchEvent(new Event('change',{bubbles:true}));
+    }
+    await wait(300);
+    start.click();
+    await wait(1500);
+    return JSON.stringify({
+      attempted:true,
+      completed:true,
+      roleValue:role.value,
+      termsChecked:!!terms.checked,
+      clicked:text(start)
+    });
+  })()`;
 }
 
 async function panelTarget(cdp: CDP): Promise<TargetInfo | null> {
