@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { desktopBounds, startBrowser, waitForCdp } from "./browser.js";
-import { clickScanFullPage, clickWeFoundSomethingSave, completeAxeOnboarding, configureAxeSettings, dismissAxeAiPopup, showAxeDevToolsPanel, signInToAxe } from "./extension.js";
+import { clickScanFullPage, completeAxeOnboarding, configureAxeSettings, dismissAxeAiPopup, showAxeDevToolsPanel, signInToAxe } from "./extension.js";
 import { waitForAndCloseInstallSuccess } from "./setup.js";
 import { CDP } from "./cdp.js";
 import { writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const targetUrl = process.env.TARGET_URL || process.env.AXE_TARGET_URL;
 const port = Number(process.env.AXE_CDP_PORT || 9222);
@@ -84,6 +86,21 @@ async function showAxeDevToolsPanelWithRetries(endpoint: string, attempts: numbe
   return lastResult ?? { panelShown: false, panelTargetFound: false, panelUrl: null, attempt: 0, attempts, timeoutMs };
 }
 
+function startOptionalPopupWatcher(endpoint: string, timeoutMs: number) {
+  const watcherPath = fileURLToPath(new URL("./optional-popup-watcher.js", import.meta.url));
+  const child = spawn(process.execPath, [watcherPath], {
+    detached: true,
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      AXE_CDP_ENDPOINT: endpoint,
+      AXE_WE_FOUND_SOMETHING_SAVE_WAIT_MS: String(timeoutMs),
+    },
+  });
+  child.unref();
+  return { started: true, pid: child.pid ?? null, timeoutMs };
+}
+
 async function main() {
   if (!targetUrl) {
     throw new Error("TARGET_URL or AXE_TARGET_URL is required for startup preparation.");
@@ -133,7 +150,7 @@ async function main() {
 
   let signIn: any = null;
   let scanFullPage: any = null;
-  let weFoundSomethingSave: any = null;
+  let weFoundSomethingSaveWatcher: any = null;
   if (process.env.AXE_LOGIN_EMAIL && process.env.AXE_LOGIN_PASSWORD) {
     const result = await signInToAxe({
       endpoint: info.endpoint,
@@ -152,24 +169,24 @@ async function main() {
       scanFullPage = await clickScanFullPage(info.endpoint, envNumber("AXE_SCAN_FULL_PAGE_WAIT_MS", 30_000));
       console.error(`[axe-mcp] axe Scan full page click: ${JSON.stringify(scanFullPage)}`);
       if (scanFullPage.ok) {
-        weFoundSomethingSave = await clickWeFoundSomethingSave(
+        weFoundSomethingSaveWatcher = startOptionalPopupWatcher(
           info.endpoint,
           envNumber("AXE_WE_FOUND_SOMETHING_SAVE_WAIT_MS", 60_000)
         );
-        console.error(`[axe-mcp] axe optional We found something save: ${JSON.stringify(weFoundSomethingSave)}`);
+        console.error(`[axe-mcp] axe optional We found something watcher: ${JSON.stringify(weFoundSomethingSaveWatcher)}`);
       } else {
-        weFoundSomethingSave = { ok: false, skipped: true, reason: "Scan full page did not complete" };
-        console.error(`[axe-mcp] axe optional We found something save skipped: ${JSON.stringify(weFoundSomethingSave)}`);
+        weFoundSomethingSaveWatcher = { started: false, skipped: true, reason: "Scan full page did not complete" };
+        console.error(`[axe-mcp] axe optional We found something watcher skipped: ${JSON.stringify(weFoundSomethingSaveWatcher)}`);
       }
     } else {
       scanFullPage = { ok: false, skipped: true, reason: "sign-in did not complete" };
-      weFoundSomethingSave = { ok: false, skipped: true, reason: "sign-in did not complete" };
+      weFoundSomethingSaveWatcher = { started: false, skipped: true, reason: "sign-in did not complete" };
       console.error(`[axe-mcp] axe Scan full page click skipped: ${JSON.stringify(scanFullPage)}`);
     }
   } else {
     console.error("[axe-mcp] AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set; skipping sign-in");
     scanFullPage = { ok: false, skipped: true, reason: "AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set" };
-    weFoundSomethingSave = { ok: false, skipped: true, reason: "AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set" };
+    weFoundSomethingSaveWatcher = { started: false, skipped: true, reason: "AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set" };
   }
 
   // if (process.env.AXE_SERVER_URL) {
@@ -203,7 +220,7 @@ async function main() {
         axePanel,
         signIn,
         scanFullPage,
-        weFoundSomethingSave,
+        weFoundSomethingSaveWatcher,
         prepared,
         readyAt: new Date().toISOString(),
       },
