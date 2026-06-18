@@ -56,6 +56,69 @@ async function maximizeBrowserWindow(endpoint: string) {
   }
 }
 
+async function restoreOriginalTargetAfterAuth(endpoint: string, targetUrl: string) {
+  const cdp = await CDP.connect(endpoint);
+  try {
+    const targets = await cdp.targets();
+    const pages = targets.filter((t) => t.type === "page");
+    const originalPage =
+      pages.find((t) => t.url === targetUrl || t.url.includes(targetUrl)) ??
+      pages.find((t) => {
+        try {
+          return new URL(t.url).origin === new URL(targetUrl).origin;
+        } catch {
+          return false;
+        }
+      });
+
+    if (!originalPage) {
+      return { ok: false, reason: "original target page not found", closed: [] };
+    }
+
+    const originalHost = (() => {
+      try {
+        return new URL(originalPage.url).host;
+      } catch {
+        return "";
+      }
+    })();
+    const closed: Array<{ targetId: string; title: string; url: string; reason: string }> = [];
+
+    for (const target of targets) {
+      if (target.targetId === originalPage.targetId) continue;
+
+      const isHttpPage = target.type === "page" && /^https?:\/\//i.test(target.url);
+      const isNonOriginalHttpPage =
+        isHttpPage &&
+        target.url !== originalPage.url &&
+        !target.url.includes(targetUrl);
+      const isNonOriginalDevTools =
+        target.type === "page" &&
+        /^devtools:\/\//i.test(target.url) &&
+        originalHost &&
+        !target.title.includes(originalHost);
+
+      if (isNonOriginalHttpPage || isNonOriginalDevTools) {
+        await cdp.send("Target.closeTarget", { targetId: target.targetId }).catch(() => {});
+        closed.push({
+          targetId: target.targetId,
+          title: target.title,
+          url: target.url,
+          reason: isNonOriginalHttpPage ? "non-original http page" : "non-original devtools page",
+        });
+      }
+    }
+
+    const session = await cdp.attach(originalPage.targetId);
+    await cdp.send("Page.bringToFront", {}, session).catch(() => {});
+    await cdp.detach(session).catch(() => {});
+
+    return { ok: true, originalPage: { targetId: originalPage.targetId, title: originalPage.title, url: originalPage.url }, closed };
+  } finally {
+    cdp.close();
+  }
+}
+
 async function completeAxeOnboardingWithRetries(
   endpoint: string,
   label: string,
@@ -151,6 +214,8 @@ async function main() {
   let signIn: any = null;
   let scanFullPage: any = null;
   let weFoundSomethingSaveWatcher: any = null;
+  let postAuthTargetRestore: any = null;
+  let postAuthAxePanel: any = null;
   if (process.env.AXE_LOGIN_EMAIL && process.env.AXE_LOGIN_PASSWORD) {
     const result = await signInToAxe({
       endpoint: info.endpoint,
@@ -166,6 +231,22 @@ async function main() {
       reason: result.reason,
     })}`);
     if (result.ok) {
+      const afterAuthSettleMs = envNumber("AXE_AFTER_AUTH_SETTLE_MS", 5_000);
+      console.error(`[axe-mcp] waiting ${afterAuthSettleMs}ms for auth tab cleanup before scan`);
+      await sleep(afterAuthSettleMs);
+
+      postAuthTargetRestore = await restoreOriginalTargetAfterAuth(info.endpoint, targetUrl);
+      console.error(`[axe-mcp] post-auth original target restore: ${JSON.stringify(postAuthTargetRestore)}`);
+
+      postAuthAxePanel = await showAxeDevToolsPanelWithRetries(
+        info.endpoint,
+        envNumber("AXE_PANEL_OPEN_ATTEMPTS", 3),
+        envNumber("AXE_PANEL_OPEN_ATTEMPT_MS", 2_500),
+        envNumber("AXE_PANEL_OPEN_RETRY_DELAY_MS", 300)
+      );
+      console.error(`[axe-mcp] post-auth original axe DevTools panel: ${JSON.stringify(postAuthAxePanel)}`);
+
+      await sleep(envNumber("AXE_BEFORE_SCAN_SETTLE_MS", 2_000));
       scanFullPage = await clickScanFullPage(info.endpoint, envNumber("AXE_SCAN_FULL_PAGE_WAIT_MS", 30_000));
       console.error(`[axe-mcp] axe Scan full page click: ${JSON.stringify(scanFullPage)}`);
       if (scanFullPage.ok) {
@@ -219,6 +300,8 @@ async function main() {
         aiPopup,
         axePanel,
         signIn,
+        postAuthTargetRestore,
+        postAuthAxePanel,
         scanFullPage,
         weFoundSomethingSaveWatcher,
         prepared,
