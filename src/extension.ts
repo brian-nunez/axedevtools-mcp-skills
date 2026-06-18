@@ -22,14 +22,7 @@ export async function completeAxeOnboarding(endpoint: string, timeoutMs = 20_000
   const deadline = Date.now() + timeoutMs;
   try {
     while (Date.now() < deadline) {
-      const targets = await cdp.targets();
-      const candidates = targets
-        .filter(
-          (t) =>
-            (t.type === "page" || t.type === "iframe") &&
-            (/chrome-extension:\/\/lhdoppoj/i.test(t.url) || /axe\.deque\.com|deque\.com/i.test(t.url))
-        )
-        .sort((a, b) => Number(/panel\.html/i.test(b.url)) - Number(/panel\.html/i.test(a.url)));
+      const candidates = extensionTargets(await cdp.targets());
       for (const target of candidates) {
         let session: string | null = null;
         try {
@@ -53,6 +46,47 @@ export async function completeAxeOnboarding(endpoint: string, timeoutMs = 20_000
   } finally {
     cdp.close();
   }
+}
+
+export async function dismissAxeAiPopup(endpoint: string, timeoutMs = 15_000) {
+  const cdp = await CDP.connect(endpoint);
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      const candidates = extensionTargets(await cdp.targets());
+      for (const target of candidates) {
+        let session: string | null = null;
+        try {
+          session = await cdp.attach(target.targetId);
+          const result = await cdp
+            .evalIn(session, dismissAiPopupExpr())
+            .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+            .catch((e) => ({ attempted: false, error: e.message }));
+          await cdp.detach(session);
+          session = null;
+          if (result?.dismissed || result?.attempted) {
+            return { ...result, targetUrl: target.url };
+          }
+        } catch {
+          if (session) await cdp.detach(session).catch(() => {});
+        }
+      }
+      await sleep(500);
+    }
+    return { attempted: false, dismissed: false, reason: "AI testing popup not found before timeout" };
+  } finally {
+    cdp.close();
+  }
+}
+
+function extensionTargets(targets: TargetInfo[]) {
+  return targets
+    .filter(
+      (t) =>
+        (t.type === "page" || t.type === "iframe") &&
+        (/chrome-extension:\/\/lhdoppoj/i.test(t.url) || /axe\.deque\.com|deque\.com/i.test(t.url))
+    )
+    .sort((a, b) => Number(/panel\.html/i.test(b.url)) - Number(/panel\.html/i.test(a.url)));
 }
 
 async function showAxePanel(cdp: CDP) {
@@ -126,6 +160,58 @@ function onboardingExpr() {
       roleValue:role.value,
       termsChecked:!!terms.checked,
       clicked:text(start)
+    });
+  })()`;
+}
+
+function dismissAiPopupExpr() {
+  return `(async()=> {
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
+    const norm=s=>(s||'').replace(/\\s+/g,' ').trim();
+    const text=e=>norm((e.getAttribute&&e.getAttribute('aria-label'))||e.textContent||'');
+    const headings=[...document.querySelectorAll('h2')];
+    const heading=headings.find(h=>h.id==='dialog-title-30' || /AI testing that saves hours, not minutes/i.test(text(h)));
+    if(!heading) {
+      return JSON.stringify({attempted:false, dismissed:false});
+    }
+    const scopes=[
+      heading.parentElement,
+      heading.closest('[role=dialog]'),
+      heading.closest('[aria-modal=true]'),
+      heading.closest('dialog'),
+      heading.parentElement && heading.parentElement.parentElement
+    ].filter(Boolean);
+    let button=null;
+    for(const scope of scopes) {
+      const buttons=[...scope.querySelectorAll('button,[role=button]')].filter(b=>b!==heading);
+      button=buttons.find(b=>b.offsetParent!==null) || buttons[0] || null;
+      if(button) break;
+    }
+    if(!button) {
+      const siblingButtons=[
+        ...(heading.parentElement ? [...heading.parentElement.children].filter(e=>e!==heading && /^(BUTTON)$/i.test(e.tagName)) : []),
+        ...(heading.parentElement ? [...heading.parentElement.querySelectorAll('button,[role=button]')] : [])
+      ];
+      button=siblingButtons[0] || null;
+    }
+    if(!button) {
+      return JSON.stringify({
+        attempted:true,
+        dismissed:false,
+        reason:'AI popup close button not found',
+        headingId:heading.id,
+        headingText:text(heading)
+      });
+    }
+    button.click();
+    await wait(1000);
+    const stillOpen=[...document.querySelectorAll('h2')].some(h=>h.id==='dialog-title-30' || /AI testing that saves hours, not minutes/i.test(text(h)));
+    return JSON.stringify({
+      attempted:true,
+      dismissed:!stillOpen,
+      clickedText:text(button),
+      headingId:heading.id,
+      headingText:text(heading)
     });
   })()`;
 }

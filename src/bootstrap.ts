@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { startBrowser, waitForCdp } from "./browser.js";
-import { completeAxeOnboarding, configureAxeExtension, showAxeDevToolsPanel } from "./extension.js";
+import { completeAxeOnboarding, configureAxeExtension, dismissAxeAiPopup, showAxeDevToolsPanel } from "./extension.js";
 import { waitForAndCloseInstallSuccess } from "./setup.js";
 import { CDP } from "./cdp.js";
 import { writeFile } from "node:fs/promises";
@@ -56,6 +56,9 @@ async function main() {
     console.error(`[axe-mcp] axe onboarding after panel: ${JSON.stringify(onboarding)}`);
   }
 
+  const aiPopup = await dismissAxeAiPopup(info.endpoint, Number(process.env.AXE_AI_POPUP_WAIT_MS || 15_000));
+  console.error(`[axe-mcp] axe AI popup dismiss: ${JSON.stringify(aiPopup)}`);
+
   if (process.env.AXE_LOGIN_EMAIL && process.env.AXE_LOGIN_PASSWORD) {
     const result = await configureAxeExtension({
       endpoint,
@@ -88,6 +91,7 @@ async function main() {
         browserPid: info.pid,
         installSuccess,
         onboarding,
+        aiPopup,
         axePanel,
         prepared,
         readyAt: new Date().toISOString(),
