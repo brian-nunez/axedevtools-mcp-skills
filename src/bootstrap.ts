@@ -254,7 +254,9 @@ async function main() {
       console.error(`[axe-mcp] post-auth axe DevTools panel reload: ${JSON.stringify(postAuthAxePanelReload)}`);
 
       if (process.env.AXE_AUTO_SCAN_FULL_PAGE === "1") {
-        await sleep(envNumber("AXE_BEFORE_SCAN_SETTLE_MS", 2_000));
+        const beforeScanSettleMs = envNumber("AXE_BEFORE_SCAN_SETTLE_MS", 1_000);
+        console.error(`[axe-mcp] waiting ${beforeScanSettleMs}ms after axe panel refresh before selecting Full Page Scan`);
+        await sleep(beforeScanSettleMs);
         scanFullPage = await clickScanFullPage(info.endpoint, envNumber("AXE_SCAN_FULL_PAGE_WAIT_MS", 30_000));
         console.error(`[axe-mcp] axe Scan full page click: ${JSON.stringify(scanFullPage)}`);
         if (scanFullPage.ok) {
