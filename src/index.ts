@@ -4,9 +4,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { z } from "zod";
 import { panelScan } from "./panel.js";
+import { CDP } from "./cdp.js";
 import { startBrowser, waitForCdp, findAxeExtensionDir } from "./browser.js";
 import { captureElement, capturePage, mediaAudit, inventory } from "./visual.js";
 import { runScript, scriptsAvailable, SCRIPTS_DIR } from "./igt.js";
@@ -16,7 +18,106 @@ import { configureAxeExtension, showAxeDevToolsPanel } from "./extension.js";
 import { navigatePage, openPage } from "./navigation.js";
 
 const DEFAULT_ENDPOINT = process.env.AXE_CDP_ENDPOINT || "http://127.0.0.1:9222";
+const READY_FILE = "/tmp/axe-mcp/ready.json";
 let lastPid: number | null = null;
+
+type ShutdownResult = {
+  irreversible: true;
+  warning: string;
+  cdpEndpoint: string;
+  browserTargetsClosed: Array<{ targetId: string; type: string; url: string; closed: boolean; error?: string }>;
+  browserPidsSignaled: Array<{ pid: number; signaled: boolean; error?: string }>;
+  mcpServerShutdownScheduled: true;
+  shutdownDelayMs: number;
+};
+
+async function readPreparedBrowserPid(): Promise<number | null> {
+  try {
+    const raw = await readFile(READY_FILE, "utf8");
+    const parsed = JSON.parse(raw) as { browserPid?: unknown };
+    return typeof parsed.browserPid === "number" && Number.isInteger(parsed.browserPid) ? parsed.browserPid : null;
+  } catch {
+    return null;
+  }
+}
+
+function uniquePids(pids: Array<number | null | undefined>): number[] {
+  return [...new Set(pids.filter((pid): pid is number => typeof pid === "number" && Number.isInteger(pid) && pid > 0))];
+}
+
+function signalBrowserPid(pid: number): Array<{ pid: number; signaled: boolean; error?: string }> {
+  const results: Array<{ pid: number; signaled: boolean; error?: string }> = [];
+  for (const targetPid of [-pid, pid]) {
+    try {
+      process.kill(targetPid, "SIGTERM");
+      results.push({ pid: targetPid, signaled: true });
+    } catch (error: any) {
+      results.push({ pid: targetPid, signaled: false, error: error?.message ?? String(error) });
+    }
+  }
+  return results;
+}
+
+async function closeBrowserTargets(
+  endpoint: string
+): Promise<Array<{ targetId: string; type: string; url: string; closed: boolean; error?: string }>> {
+  let cdp: CDP | null = null;
+  try {
+    cdp = await CDP.connect(endpoint);
+    const targets = await cdp.targets();
+    const closeableTargets = targets.filter((target) => target.type !== "browser");
+    const results: Array<{ targetId: string; type: string; url: string; closed: boolean; error?: string }> = [];
+    for (const target of closeableTargets) {
+      try {
+        const response = (await cdp.send("Target.closeTarget", { targetId: target.targetId })) as { success?: boolean };
+        results.push({
+          targetId: target.targetId,
+          type: target.type,
+          url: target.url,
+          closed: response.success ?? true,
+        });
+      } catch (error: any) {
+        results.push({
+          targetId: target.targetId,
+          type: target.type,
+          url: target.url,
+          closed: false,
+          error: error?.message ?? String(error),
+        });
+      }
+    }
+    return results;
+  } catch (error: any) {
+    return [{ targetId: "", type: "cdp", url: endpoint, closed: false, error: error?.message ?? String(error) }];
+  } finally {
+    cdp?.close();
+  }
+}
+
+async function cleanupBrowserAndScheduleShutdown(args: {
+  endpoint: string;
+  shutdownDelayMs: number;
+}): Promise<ShutdownResult> {
+  const browserTargetsClosed = await closeBrowserTargets(args.endpoint);
+  const pids = uniquePids([lastPid, await readPreparedBrowserPid()]);
+  const browserPidsSignaled = pids.flatMap(signalBrowserPid);
+  lastPid = null;
+
+  setTimeout(() => {
+    process.exit(0);
+  }, args.shutdownDelayMs).unref();
+
+  return {
+    irreversible: true,
+    warning:
+      "IRREVERSIBLE: the browser has been closed/cleaned up and this MCP server is shutting down. Further MCP calls will fail until the container/server is restarted.",
+    cdpEndpoint: args.endpoint,
+    browserTargetsClosed,
+    browserPidsSignaled,
+    mcpServerShutdownScheduled: true,
+    shutdownDelayMs: args.shutdownDelayMs,
+  };
+}
 
 const server = new McpServer({ name: "axe-mcp", version: "0.2.0" });
 
@@ -201,6 +302,49 @@ server.registerTool(
     }
     if (pid === lastPid) lastPid = null;
     return { content: [{ type: "text" as const, text: JSON.stringify({ stopped, pid }) }] };
+  }
+);
+
+server.registerTool(
+  "axe_cleanup_shutdown",
+  {
+    title: "Irreversibly clean up browser and shut down MCP server",
+    description:
+      "IRREVERSIBLE. Closes browser targets, signals the prepared/tracked Chromium process, and shuts down this MCP server process. " +
+      "After this tool returns, additional MCP calls will fail until the container/server is restarted. Requires confirmIrreversible=true.",
+    inputSchema: {
+      confirmIrreversible: z
+        .boolean()
+        .describe("Must be true. This confirms the caller understands the browser and MCP server will be terminated."),
+      cdpEndpoint: z.string().optional().describe(`CDP endpoint. Default ${DEFAULT_ENDPOINT}.`),
+      shutdownDelayMs: z
+        .number()
+        .int()
+        .min(100)
+        .max(10_000)
+        .optional()
+        .describe("Delay before terminating this MCP process, allowing the tool response to flush. Default 500ms."),
+    },
+  },
+  async (a) => {
+    if (a.confirmIrreversible !== true) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              "Refusing to shut down. This action is IRREVERSIBLE: it closes/cleans up the browser and terminates the MCP server. " +
+              "Call again with confirmIrreversible=true.",
+          },
+        ],
+      };
+    }
+
+    const result = await cleanupBrowserAndScheduleShutdown({
+      endpoint: a.cdpEndpoint || DEFAULT_ENDPOINT,
+      shutdownDelayMs: a.shutdownDelayMs ?? 500,
+    });
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
   }
 );
 
