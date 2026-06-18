@@ -97,36 +97,21 @@ export async function clickScanFullPage(endpoint: string, timeoutMs = 30_000) {
       try {
         session = await cdp.attach(panel.targetId);
         const result = await cdp
-          .evalIn(session, scanFullPageProbeExpr())
+          .evalIn(session, scanFullPageClickExpr())
           .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
           .catch((e) => ({ ok: false, reason: e.message }));
         lastResult = result;
-        if (result?.ready && result?.point) {
-          await cdp.send(
-            "Input.dispatchMouseEvent",
-            { type: "mouseMoved", x: result.point.x, y: result.point.y },
-            session
-          ).catch(() => {});
-          await cdp.send(
-            "Input.dispatchMouseEvent",
-            { type: "mousePressed", button: "left", x: result.point.x, y: result.point.y, clickCount: 1 },
-            session
-          );
-          await cdp.send(
-            "Input.dispatchMouseEvent",
-            { type: "mouseReleased", button: "left", x: result.point.x, y: result.point.y, clickCount: 1 },
-            session
-          );
-          await sleep(500);
+        if (result?.clicked) {
+          await sleep(1000);
           const verified = await cdp
             .evalIn(session, scanFullPageVerifyExpr())
             .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
             .catch((e) => ({ ok: false, reason: e.message }));
-          lastResult = { probe: result, verified };
+          lastResult = { click: result, verified };
           if (verified?.ok) {
             await cdp.detach(session);
             session = null;
-            return { ...verified, targetUrl: panel.url };
+            return { ...verified, click: result, targetUrl: panel.url };
           }
         }
         await cdp.detach(session);
@@ -140,7 +125,7 @@ export async function clickScanFullPage(endpoint: string, timeoutMs = 30_000) {
 
       await sleep(500);
     }
-    return { ok: false, attempted: !!lastResult?.attempted || !!lastResult?.probe?.attempted, reason: "Scan full page was not confirmed before timeout", lastResult };
+    return { ok: false, attempted: !!lastResult?.attempted || !!lastResult?.click?.attempted, reason: "Scan full page was not confirmed before timeout", lastResult };
   } finally {
     cdp.close();
   }
@@ -325,7 +310,7 @@ function dismissAiPopupExpr() {
   })()`;
 }
 
-function scanFullPageProbeExpr() {
+function scanFullPageClickExpr() {
   return `(async()=> {
     ${DEEP}
     const wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -343,6 +328,21 @@ function scanFullPageProbeExpr() {
       ariaBusy:b.getAttribute('aria-busy')||'',
       className:b.className||''
     });
+    const activate=el=>{
+      const r=el.getBoundingClientRect();
+      const init={bubbles:true,cancelable:true,composed:true,view:window,clientX:r.left+r.width/2,clientY:r.top+r.height/2};
+      try{el.focus();}catch(_){}
+      try{el.dispatchEvent(new PointerEvent('pointerover',init));}catch(_){}
+      try{el.dispatchEvent(new MouseEvent('mouseover',init));}catch(_){}
+      try{el.dispatchEvent(new PointerEvent('pointermove',init));}catch(_){}
+      try{el.dispatchEvent(new MouseEvent('mousemove',init));}catch(_){}
+      try{el.dispatchEvent(new PointerEvent('pointerdown',{...init,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1}));}catch(_){}
+      try{el.dispatchEvent(new MouseEvent('mousedown',{...init,button:0,buttons:1}));}catch(_){}
+      try{el.dispatchEvent(new PointerEvent('pointerup',{...init,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:0}));}catch(_){}
+      try{el.dispatchEvent(new MouseEvent('mouseup',{...init,button:0,buttons:0}));}catch(_){}
+      try{el.dispatchEvent(new MouseEvent('click',{...init,button:0,buttons:0,detail:1}));}catch(_){}
+      try{el.click();}catch(_){}
+    };
     const findButton=()=>deep('button[type="button"]',document,[]).find(b=>
       visible(b) &&
       /^Scan full page$/i.test(text(b)) &&
@@ -378,16 +378,15 @@ function scanFullPageProbeExpr() {
       });
     }
     button.scrollIntoView({block:'center', inline:'center'});
-    await wait(250);
-    try{button.focus();}catch(_){}
-    const r=button.getBoundingClientRect();
+    await wait(500);
+    activate(button);
+    await wait(500);
     return JSON.stringify({
-      ok:false,
+      ok:true,
       attempted:true,
-      ready:true,
-      clicked:false,
-      button:buttonState(button),
-      point:{x:r.left+r.width/2,y:r.top+r.height/2}
+      clicked:true,
+      clickedText:text(button),
+      button:buttonState(button)
     });
   })()`;
 }
@@ -595,11 +594,22 @@ export async function signInToAxe(opts: SignInOptions) {
     while (Date.now() < deadline) {
       const targets = await cdp.targets();
       const newPages = targets.filter((t) => t.type === "page" && !existingIds.has(t.targetId));
+      await Promise.all(
+        newPages
+          .filter((t) => /^devtools:\/\//i.test(t.url))
+          .map((t) => cdp.send("Target.closeTarget", { targetId: t.targetId }).catch(() => {}))
+      );
       loginPage = newPages.find((t) => /^https?:\/\//i.test(t.url)) ?? null;
       if (loginPage) break;
       await sleep(300);
     }
     if (!loginPage) return { ok: false, reason: "login page did not open", clickResult };
+    await sleep(500);
+    await Promise.all(
+      (await cdp.targets())
+        .filter((t) => t.type === "page" && !existingIds.has(t.targetId) && /^devtools:\/\//i.test(t.url))
+        .map((t) => cdp.send("Target.closeTarget", { targetId: t.targetId }).catch(() => {}))
+    );
 
     // Attach first, then use Page.bringToFront through the session — this is
     // what actually gives the page OS-level focus in a headless/VNC environment
