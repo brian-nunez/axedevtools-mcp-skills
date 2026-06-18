@@ -20,7 +20,7 @@ build:
 
 start:
 	$(MAKE) stop
-	docker run -d \
+	@docker run -d \
 		--name $(CONTAINER) \
 		-p $(MCP_PORT):3000 \
 		-p $(NOVNC_PORT):6080 \
@@ -33,11 +33,12 @@ start:
 		-e ON_PREM="$(ON_PREM)" \
 		-v $(PROFILE_VOLUME):/home/pwuser/.axe-mcp-browser \
 		$(IMAGE)
-	@echo "MCP:    http://127.0.0.1:$(MCP_PORT)/mcp"
-	@echo "Health: http://127.0.0.1:$(MCP_PORT)/healthz"
-	@echo "noVNC:  http://127.0.0.1:$(NOVNC_PORT)/"
-	@echo "VNC:    127.0.0.1:$(VNC_PORT)"
-	@echo "CDP:    http://127.0.0.1:$(CDP_PORT)"
+	@echo "MCP:      http://127.0.0.1:$(MCP_PORT)/mcp"
+	@echo "Health:   http://127.0.0.1:$(MCP_PORT)/healthz"
+	@echo "Liveness: http://127.0.0.1:$(MCP_PORT)/livez"
+	@echo "noVNC:    http://127.0.0.1:$(NOVNC_PORT)/"
+	@echo "VNC:      127.0.0.1:$(VNC_PORT)"
+	@echo "CDP:      http://127.0.0.1:$(CDP_PORT)"
 	@$(MAKE) wait-ready
 
 wait-ready:
