@@ -477,12 +477,15 @@ export async function signInToAxe(opts: SignInOptions) {
 
     if (!clickResult?.ok) return { ok: false, reason: "sign-in click failed", clickResult };
 
-    // Wait for the new login page to open (new page target)
+    // Wait for the new login page to open. Chrome is launched with
+    // --auto-open-devtools-for-tabs, so the auth tab can create both an actual
+    // http(s) page and a new devtools:// frontend. Only attach to the real page.
     const deadline = Date.now() + 15_000;
     let loginPage: TargetInfo | null = null;
     while (Date.now() < deadline) {
       const targets = await cdp.targets();
-      loginPage = targets.find((t) => t.type === "page" && !existingIds.has(t.targetId)) ?? null;
+      const newPages = targets.filter((t) => t.type === "page" && !existingIds.has(t.targetId));
+      loginPage = newPages.find((t) => /^https?:\/\//i.test(t.url)) ?? null;
       if (loginPage) break;
       await sleep(300);
     }
