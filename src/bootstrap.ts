@@ -253,26 +253,20 @@ async function main() {
       );
       console.error(`[axe-mcp] post-auth axe DevTools panel reload: ${JSON.stringify(postAuthAxePanelReload)}`);
 
-      if (process.env.AXE_AUTO_SCAN_FULL_PAGE === "1") {
-        const beforeScanSettleMs = envNumber("AXE_BEFORE_SCAN_SETTLE_MS", 1_000);
-        console.error(`[axe-mcp] waiting ${beforeScanSettleMs}ms after axe panel refresh before selecting Full Page Scan`);
-        await sleep(beforeScanSettleMs);
-        scanFullPage = await clickScanFullPage(info.endpoint, envNumber("AXE_SCAN_FULL_PAGE_WAIT_MS", 30_000));
-        console.error(`[axe-mcp] axe Scan full page click: ${JSON.stringify(scanFullPage)}`);
-        if (scanFullPage.ok) {
-          weFoundSomethingSaveWatcher = startOptionalPopupWatcher(
-            info.endpoint,
-            envNumber("AXE_WE_FOUND_SOMETHING_SAVE_WAIT_MS", 60_000)
-          );
-          console.error(`[axe-mcp] axe optional We found something watcher: ${JSON.stringify(weFoundSomethingSaveWatcher)}`);
-        } else {
-          weFoundSomethingSaveWatcher = { started: false, skipped: true, reason: "Scan full page did not complete" };
-          console.error(`[axe-mcp] axe optional We found something watcher skipped: ${JSON.stringify(weFoundSomethingSaveWatcher)}`);
-        }
+      const beforeScanSettleMs = envNumber("AXE_BEFORE_SCAN_SETTLE_MS", 1_000);
+      console.error(`[axe-mcp] waiting ${beforeScanSettleMs}ms after axe panel refresh before selecting Full Page Scan`);
+      await sleep(beforeScanSettleMs);
+      scanFullPage = await clickScanFullPage(info.endpoint, envNumber("AXE_SCAN_FULL_PAGE_WAIT_MS", 30_000));
+      console.error(`[axe-mcp] axe Scan full page click: ${JSON.stringify(scanFullPage)}`);
+      if (scanFullPage.ok) {
+        weFoundSomethingSaveWatcher = startOptionalPopupWatcher(
+          info.endpoint,
+          envNumber("AXE_WE_FOUND_SOMETHING_SAVE_WAIT_MS", 60_000)
+        );
+        console.error(`[axe-mcp] axe optional We found something watcher: ${JSON.stringify(weFoundSomethingSaveWatcher)}`);
       } else {
-        scanFullPage = { ok: true, skipped: true, reason: "AXE_AUTO_SCAN_FULL_PAGE is not enabled; startup leaves scan for the agent" };
-        weFoundSomethingSaveWatcher = { started: false, skipped: true, reason: "Scan was not started during startup" };
-        console.error(`[axe-mcp] axe Scan full page click skipped: ${JSON.stringify(scanFullPage)}`);
+        weFoundSomethingSaveWatcher = { started: false, skipped: true, reason: "Scan full page did not complete" };
+        console.error(`[axe-mcp] axe optional We found something watcher skipped: ${JSON.stringify(weFoundSomethingSaveWatcher)}`);
       }
     } else {
       scanFullPage = { ok: false, skipped: true, reason: "sign-in did not complete" };

@@ -383,57 +383,49 @@ function scanFullPageClickExpr() {
       ariaBusy:b.getAttribute('aria-busy')||'',
       className:b.className||''
     });
-    const scanButtonText=t=>/^(Scan full page|Full Page Scan)$/i.test(t);
+    const scanLabels=['Full Page Scan','Scan full page'];
     const usableButton=b=>b && visible(b) && !b.disabled && b.getAttribute('aria-disabled')!=='true' && b.getAttribute('aria-busy')!=='true';
     const buttonFromMatch=el=>{
       const button=el.closest && el.closest('button');
       return button || (el.tagName==='BUTTON' ? el : null);
     };
     const activate=el=>{
-      const r=el.getBoundingClientRect();
-      const init={bubbles:true,cancelable:true,composed:true,view:window,clientX:r.left+r.width/2,clientY:r.top+r.height/2};
       try{el.focus();}catch(_){}
-      try{el.dispatchEvent(new PointerEvent('pointerover',init));}catch(_){}
-      try{el.dispatchEvent(new MouseEvent('mouseover',init));}catch(_){}
-      try{el.dispatchEvent(new PointerEvent('pointermove',init));}catch(_){}
-      try{el.dispatchEvent(new MouseEvent('mousemove',init));}catch(_){}
-      try{el.dispatchEvent(new PointerEvent('pointerdown',{...init,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:1}));}catch(_){}
-      try{el.dispatchEvent(new MouseEvent('mousedown',{...init,button:0,buttons:1}));}catch(_){}
-      try{el.dispatchEvent(new PointerEvent('pointerup',{...init,pointerId:1,pointerType:'mouse',isPrimary:true,button:0,buttons:0}));}catch(_){}
-      try{el.dispatchEvent(new MouseEvent('mouseup',{...init,button:0,buttons:0}));}catch(_){}
-      try{el.dispatchEvent(new MouseEvent('click',{...init,button:0,buttons:0,detail:1}));}catch(_){}
       try{el.click();}catch(_){}
     };
     const findButton=()=>{
-      const direct=deep('button',document,[]).find(b=>usableButton(b) && scanButtonText(text(b)));
-      if(direct) return direct;
-      const matches=deep('button *,[role=button] *',document,[])
-        .filter(el=>visible(el) && scanButtonText(text(el)));
-      for(const match of matches){
-        const button=buttonFromMatch(match);
-        if(usableButton(button)) return button;
+      for(const label of scanLabels){
+        const direct=deep('button',document,[]).find(b=>usableButton(b) && text(b).toLowerCase()===label.toLowerCase());
+        if(direct) return {button:direct, matchedLabel:label, matchedVia:'button'};
+        const matches=deep('button *,[role=button] *',document,[])
+          .filter(el=>visible(el) && text(el).toLowerCase()===label.toLowerCase());
+        for(const match of matches){
+          const button=buttonFromMatch(match);
+          if(usableButton(button)) return {button, matchedLabel:label, matchedVia:match.tagName};
+        }
       }
       return null;
     };
     const deadline=Date.now()+10000;
-    let button=null;
+    let foundInfo=null;
     let stableSince=0;
     while(Date.now()<deadline){
       const found=findButton();
       if(found) {
-        if(found===button) {
+        if(found.button===(foundInfo&&foundInfo.button)) {
           if(!stableSince) stableSince=Date.now();
           if(Date.now()-stableSince>=750) break;
         } else {
-          button=found;
+          foundInfo=found;
           stableSince=Date.now();
         }
       } else {
-        button=null;
+        foundInfo=null;
         stableSince=0;
       }
       await wait(150);
     }
+    const button=foundInfo&&foundInfo.button;
     if(!button) {
       return JSON.stringify({
         ok:false,
@@ -451,6 +443,8 @@ function scanFullPageClickExpr() {
       attempted:true,
       clicked:true,
       clickedText:text(button),
+      matchedLabel:foundInfo.matchedLabel,
+      matchedVia:foundInfo.matchedVia,
       button:buttonState(button)
     });
   })()`;
@@ -468,16 +462,20 @@ function scanFullPageVerifyExpr() {
       const s=getComputedStyle(e);
       return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden';
     };
-    const scanButtonText=t=>/^(Scan full page|Full Page Scan)$/i.test(t);
+    const scanLabels=['Full Page Scan','Scan full page'];
     const buttonFromMatch=el=>{
       const button=el.closest && el.closest('button');
       return button || (el.tagName==='BUTTON' ? el : null);
     };
     const button=()=>{
-      const direct=deep('button',document,[]).find(b=>scanButtonText(text(b)));
-      if(direct) return direct;
-      const match=deep('button *,[role=button] *',document,[]).find(el=>visible(el) && scanButtonText(text(el)));
-      return match ? buttonFromMatch(match) : null;
+      for(const label of scanLabels){
+        const direct=deep('button',document,[]).find(b=>text(b).toLowerCase()===label.toLowerCase());
+        if(direct) return direct;
+        const match=deep('button *,[role=button] *',document,[]).find(el=>visible(el) && text(el).toLowerCase()===label.toLowerCase());
+        const button=match ? buttonFromMatch(match) : null;
+        if(button) return button;
+      }
+      return null;
     };
     const deadline=Date.now()+6000;
     while(Date.now()<deadline){
