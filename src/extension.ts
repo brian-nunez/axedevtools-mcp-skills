@@ -334,29 +334,11 @@ export async function signInToAxe(opts: SignInOptions) {
     // Used to make the auth page visible/active, but field population below does
     // not depend on OS-level keyboard focus because that has proven unreliable
     // under Xvfb/VNC.
-    const focusField = async (selector: string) => {
+    const focusField = async (field: "username" | "password") => {
       await cdp.send("Page.bringToFront", {}, loginSession);
       await sleep(300);
       const rect = await cdp
-        .evalIn(loginSession, `(async()=>{
-          const wait=ms=>new Promise(r=>setTimeout(r,ms));
-          // Wait for page to finish loading first
-          const readyDeadline=Date.now()+10000;
-          while(document.readyState!=='complete' && Date.now()<readyDeadline){
-            await wait(200);
-          }
-          const deadline=Date.now()+15000;
-          while(Date.now()<deadline){
-            const el=document.querySelector(${JSON.stringify(selector)});
-            if(el && el.getBoundingClientRect().width>0){
-              el.focus();
-              const r=el.getBoundingClientRect();
-              return {x:r.left+r.width/2,y:r.top+r.height/2};
-            }
-            await wait(300);
-          }
-          return null;
-        })()`)
+        .evalIn(loginSession, fieldRectExpr(field))
         .catch(() => null);
       if (!rect) return null;
       for (let i = 0; i < 3; i++) {
@@ -365,21 +347,18 @@ export async function signInToAxe(opts: SignInOptions) {
         await sleep(150);
       }
       // JS focus again after the clicks to make sure it took
-      await cdp.evalIn(loginSession, `(()=>{
-        const el=document.querySelector(${JSON.stringify(selector)});
-        if(el){el.focus();el.click();}
-      })()`).catch(() => {});
+      await cdp.evalIn(loginSession, focusDiscoveredFieldExpr(field)).catch(() => {});
       await sleep(300);
       return rect;
     };
 
-    const fillField = async (selector: string, value: string, label: string) => {
+    const fillField = async (field: "username" | "password", value: string, label: string) => {
       let lastResult: any = null;
       for (let attempt = 1; attempt <= 4; attempt++) {
         await cdp.send("Page.bringToFront", {}, loginSession).catch(() => {});
-        await focusField(selector);
+        await focusField(field);
         const result = await cdp
-          .evalIn(loginSession, fillFieldExpr(selector, value))
+          .evalIn(loginSession, fillFieldExpr(field, value))
           .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
           .catch((e) => ({ ok: false, reason: e.message }));
         lastResult = { ...result, attempt, label };
@@ -405,36 +384,36 @@ export async function signInToAxe(opts: SignInOptions) {
       return lastResult ?? { ok: false, reason: `${label} button click did not run`, label };
     };
 
-    // Focus and robustly fill #username. The fill helper verifies the actual DOM
+    // Focus and robustly fill the username/email field. The fill helper verifies the actual DOM
     // value before we click Next, so startup does not silently continue with an
     // empty or partially-filled email field.
-    const usernameRect = await focusField("#username");
+    const usernameRect = await focusField("username");
     if (!usernameRect) {
       await cdp.detach(loginSession);
-      return { ok: false, reason: "#username not found", clickResult };
+      return { ok: false, reason: "username/email field not found", clickResult };
     }
-    const usernameFill = await fillField("#username", opts.email, "username");
+    const usernameFill = await fillField("username", opts.email, "username");
     if (!usernameFill.ok) {
       await cdp.detach(loginSession);
-      return { ok: false, reason: "failed to fill #username", clickResult, usernameFill };
+      return { ok: false, reason: "failed to fill username/email field", clickResult, usernameFill };
     }
 
-    const nextClick = await clickButton("Next", /Next/i);
+    const nextClick = await clickButton("Next", /Next|Continue|Submit|Sign in|Log in/i);
     if (!nextClick.ok) {
       await cdp.detach(loginSession);
       return { ok: false, reason: "Next button not found/clickable", clickResult, usernameFill, nextClick };
     }
 
     // Focus and robustly fill #password after the password screen appears.
-    const passwordRect = await focusField("#password");
+    const passwordRect = await focusField("password");
     if (!passwordRect) {
       await cdp.detach(loginSession);
-      return { ok: false, reason: "#password not found", clickResult, usernameFill, nextClick };
+      return { ok: false, reason: "password field not found", clickResult, usernameFill, nextClick };
     }
-    const passwordFill = await fillField("#password", opts.password, "password");
+    const passwordFill = await fillField("password", opts.password, "password");
     if (!passwordFill.ok) {
       await cdp.detach(loginSession);
-      return { ok: false, reason: "failed to fill #password", clickResult, usernameFill, nextClick, passwordFill };
+      return { ok: false, reason: "failed to fill password field", clickResult, usernameFill, nextClick, passwordFill };
     }
 
     const submitClick = await clickButton("Submit", /Submit|Sign in|Log in/i);
@@ -457,23 +436,100 @@ export async function signInToAxe(opts: SignInOptions) {
 
 function redactFillResult(result: any) {
   if (!result || typeof result !== "object") return result;
-  const { expectedLength, actualLength, attempt, label, ok, reason, selector, tagName, type } = result;
-  return { ok, reason, selector, tagName, type, expectedLength, actualLength, attempt, label };
+  const { expectedLength, actualLength, attempt, label, ok, reason, selector, tagName, type, name, id, autocomplete } = result;
+  return { ok, reason, selector, tagName, type, name, id, autocomplete, expectedLength, actualLength, attempt, label };
 }
 
-function fillFieldExpr(selector: string, value: string) {
+function fieldDiscoverySource(field: "username" | "password") {
+  return `
+    const field=${JSON.stringify(field)};
+    const norm=s=>(s||'').replace(/\\s+/g,' ').trim();
+    const attr=(el,n)=>el.getAttribute&&el.getAttribute(n)||'';
+    const labelText=(el)=>{
+      const id=attr(el,'id');
+      const labels=[
+        ...(el.labels ? [...el.labels] : []),
+        ...(id ? [...document.querySelectorAll('label[for="'+CSS.escape(id)+'"]')] : [])
+      ];
+      return norm(labels.map(l=>l.innerText||l.textContent||'').join(' '));
+    };
+    const descriptor=(el)=>norm([
+      attr(el,'id'),
+      attr(el,'name'),
+      attr(el,'type'),
+      attr(el,'autocomplete'),
+      attr(el,'placeholder'),
+      attr(el,'aria-label'),
+      labelText(el)
+    ].join(' '));
+    const visible=(el)=>{
+      const r=el.getBoundingClientRect();
+      const s=getComputedStyle(el);
+      return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden';
+    };
+    const candidates=()=>[...document.querySelectorAll('input,textarea')]
+      .filter(el=>visible(el) && !el.disabled && !el.readOnly && !['hidden','checkbox','radio','submit','button'].includes((el.type||'').toLowerCase()));
+    const findField=()=>{
+      const all=candidates();
+      if(field==='password') {
+        const byId=document.querySelector('#password');
+        return (byId && visible(byId) && !byId.disabled && !byId.readOnly ? byId : null)
+          || all.find(el=>(el.type||'').toLowerCase()==='password')
+          || all.find(el=>/(^|\\b)(password|passwd|passcode|pwd)(\\b|$)/i.test(descriptor(el)));
+      }
+      const byId=document.querySelector('#username');
+      return (byId && visible(byId) && !byId.disabled && !byId.readOnly ? byId : null)
+        || all.find(el=>/(^|\\b)(username|user-name|email|e-mail|login|userid|user id|user_id)(\\b|$)/i.test(descriptor(el)))
+        || all.find(el=>(el.type||'').toLowerCase()==='email')
+        || all.find(el=>/(email|username)/i.test((el.autocomplete||'')))
+        || all.find(el=>['text','email',''].includes((el.type||'').toLowerCase()));
+    };
+  `;
+}
+
+function fieldRectExpr(field: "username" | "password") {
   return `(async()=>{
     const wait=ms=>new Promise(r=>setTimeout(r,ms));
-    const selector=${JSON.stringify(selector)};
+    const readyDeadline=Date.now()+10000;
+    while(document.readyState!=='complete' && Date.now()<readyDeadline){
+      await wait(200);
+    }
+    ${fieldDiscoverySource(field)}
+    const deadline=Date.now()+15000;
+    while(Date.now()<deadline){
+      const el=findField();
+      if(el){
+        el.focus();
+        const r=el.getBoundingClientRect();
+        return {x:r.left+r.width/2,y:r.top+r.height/2};
+      }
+      await wait(300);
+    }
+    return null;
+  })()`;
+}
+
+function focusDiscoveredFieldExpr(field: "username" | "password") {
+  return `(()=>{
+    ${fieldDiscoverySource(field)}
+    const el=findField();
+    if(el){el.focus();try{el.click();}catch(_){}}
+  })()`;
+}
+
+function fillFieldExpr(field: "username" | "password", value: string) {
+  return `(async()=>{
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
     const expected=${JSON.stringify(value)};
+    ${fieldDiscoverySource(field)}
     const deadline=Date.now()+8000;
     let el=null;
     while(Date.now()<deadline){
-      el=document.querySelector(selector);
-      if(el && !el.disabled && !el.readOnly && el.getBoundingClientRect().width>0 && el.getBoundingClientRect().height>0) break;
+      el=findField();
+      if(el) break;
       await wait(150);
     }
-    if(!el) return JSON.stringify({ok:false, reason:'field not found or not interactable', selector, expectedLength:expected.length});
+    if(!el) return JSON.stringify({ok:false, reason:'field not found or not interactable', field, expectedLength:expected.length});
 
     const fire=(type)=>el.dispatchEvent(new Event(type,{bubbles:true,cancelable:true}));
     const inputSetter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set;
@@ -502,9 +558,13 @@ function fillFieldExpr(selector: string, value: string) {
       if(el.value===expected) {
         return JSON.stringify({
           ok:true,
-          selector,
+          field,
+          selector:el.id ? '#'+el.id : '',
           tagName:el.tagName,
           type:el.type||'',
+          name:el.name||'',
+          id:el.id||'',
+          autocomplete:el.autocomplete||'',
           expectedLength:expected.length,
           actualLength:el.value.length
         });
@@ -514,9 +574,13 @@ function fillFieldExpr(selector: string, value: string) {
     return JSON.stringify({
       ok:false,
       reason:'field value did not match after retries',
-      selector,
+      field,
+      selector:el.id ? '#'+el.id : '',
       tagName:el.tagName,
       type:el.type||'',
+      name:el.name||'',
+      id:el.id||'',
+      autocomplete:el.autocomplete||'',
       expectedLength:expected.length,
       actualLength:(el.value||'').length
     });
