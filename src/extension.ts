@@ -432,6 +432,8 @@ function signInClickExpr(clickEmailLink: boolean) {
     const click=el=>{try{el.click();}catch(_){}};
     const itext=e=>((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();
 
+    if(window.__axeSignInClicked) return JSON.stringify({ok:true, clicked:'deduped'});
+
     const btnDeadline=Date.now()+10000;
     let signInBtn=null;
     while(Date.now()<btnDeadline){
@@ -441,6 +443,7 @@ function signInClickExpr(clickEmailLink: boolean) {
       await wait(400);
     }
     if(!signInBtn) return JSON.stringify({ok:false, reason:'Sign in button not found after 10s', buttons:deep('button,[role=button]',document,[]).map(itext).filter(Boolean).slice(0,20)});
+    window.__axeSignInClicked=true;
     click(signInBtn);
     await wait(500);
 
