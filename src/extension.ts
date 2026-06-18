@@ -116,6 +116,41 @@ export async function clickScanFullPage(endpoint: string, timeoutMs = 30_000) {
   }
 }
 
+export async function clickWeFoundSomethingSave(endpoint: string, timeoutMs = 15_000) {
+  const cdp = await CDP.connect(endpoint);
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      const panel = await panelTarget(cdp, Date.now() + 2_500, 250);
+      if (!panel) {
+        await sleep(500);
+        continue;
+      }
+
+      let session: string | null = null;
+      try {
+        session = await cdp.attach(panel.targetId);
+        const result = await cdp
+          .evalIn(session, weFoundSomethingSaveExpr())
+          .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+          .catch((e) => ({ ok: false, reason: e.message }));
+        await cdp.detach(session);
+        session = null;
+        if (result?.saved || result?.attempted) {
+          return { ...result, targetUrl: panel.url };
+        }
+      } catch {
+        if (session) await cdp.detach(session).catch(() => { });
+      }
+
+      await sleep(500);
+    }
+    return { ok: true, attempted: false, saved: false, reason: "We found something modal did not appear" };
+  } finally {
+    cdp.close();
+  }
+}
+
 function extensionTargets(targets: TargetInfo[]) {
   return targets
     .filter(
@@ -287,6 +322,62 @@ function scanFullPageExpr() {
     button.click();
     await wait(1000);
     return JSON.stringify({ok:true, attempted:true, clicked:text(button)});
+  })()`;
+}
+
+function weFoundSomethingSaveExpr() {
+  return `(async()=> {
+    ${DEEP}
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
+    const norm=s=>(s||'').replace(/\\s+/g,' ').trim();
+    const text=e=>norm((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'');
+    const visible=e=>{
+      const r=e.getBoundingClientRect();
+      const s=getComputedStyle(e);
+      return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden';
+    };
+    const deadline=Date.now()+2500;
+    let heading=null;
+    while(Date.now()<deadline){
+      heading=deep('h1,h2,h3,[role="heading"]',document,[]).find(h=>visible(h) && /^We found something$/i.test(text(h)));
+      if(heading) break;
+      await wait(150);
+    }
+    if(!heading) {
+      return JSON.stringify({ok:true, attempted:false, saved:false, reason:'We found something modal not present'});
+    }
+
+    const scopes=[
+      heading.closest('[role=dialog]'),
+      heading.closest('[aria-modal=true]'),
+      heading.closest('dialog'),
+      heading.parentElement,
+      heading.parentElement && heading.parentElement.parentElement,
+      document
+    ].filter(Boolean);
+    let button=null;
+    for(const scope of scopes){
+      button=deep('button,[role=button]',scope,[]).find(b=>visible(b) && /^Save$/i.test(text(b)) && !b.disabled);
+      if(button) break;
+    }
+    if(!button) {
+      return JSON.stringify({
+        ok:false,
+        attempted:true,
+        saved:false,
+        reason:'Save button not found',
+        headingText:text(heading),
+        buttons:deep('button,[role=button]',document,[]).map(b=>({text:text(b), disabled:!!b.disabled})).filter(b=>b.text).slice(0,30)
+      });
+    }
+    button.scrollIntoView({block:'center', inline:'center'});
+    await wait(100);
+    try{button.focus();}catch(_){}
+    button.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
+    button.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
+    button.click();
+    await wait(1000);
+    return JSON.stringify({ok:true, attempted:true, saved:true, headingText:text(heading), clicked:text(button)});
   })()`;
 }
 

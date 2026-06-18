@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { desktopBounds, startBrowser, waitForCdp } from "./browser.js";
-import { clickScanFullPage, completeAxeOnboarding, configureAxeSettings, dismissAxeAiPopup, showAxeDevToolsPanel, signInToAxe } from "./extension.js";
+import { clickScanFullPage, clickWeFoundSomethingSave, completeAxeOnboarding, configureAxeSettings, dismissAxeAiPopup, showAxeDevToolsPanel, signInToAxe } from "./extension.js";
 import { waitForAndCloseInstallSuccess } from "./setup.js";
 import { CDP } from "./cdp.js";
 import { writeFile } from "node:fs/promises";
@@ -133,6 +133,7 @@ async function main() {
 
   let signIn: any = null;
   let scanFullPage: any = null;
+  let weFoundSomethingSave: any = null;
   if (process.env.AXE_LOGIN_EMAIL && process.env.AXE_LOGIN_PASSWORD) {
     const result = await signInToAxe({
       endpoint: info.endpoint,
@@ -150,13 +151,25 @@ async function main() {
     if (result.ok) {
       scanFullPage = await clickScanFullPage(info.endpoint, envNumber("AXE_SCAN_FULL_PAGE_WAIT_MS", 30_000));
       console.error(`[axe-mcp] axe Scan full page click: ${JSON.stringify(scanFullPage)}`);
+      if (scanFullPage.ok) {
+        weFoundSomethingSave = await clickWeFoundSomethingSave(
+          info.endpoint,
+          envNumber("AXE_WE_FOUND_SOMETHING_SAVE_WAIT_MS", 15_000)
+        );
+        console.error(`[axe-mcp] axe optional We found something save: ${JSON.stringify(weFoundSomethingSave)}`);
+      } else {
+        weFoundSomethingSave = { ok: false, skipped: true, reason: "Scan full page did not complete" };
+        console.error(`[axe-mcp] axe optional We found something save skipped: ${JSON.stringify(weFoundSomethingSave)}`);
+      }
     } else {
       scanFullPage = { ok: false, skipped: true, reason: "sign-in did not complete" };
+      weFoundSomethingSave = { ok: false, skipped: true, reason: "sign-in did not complete" };
       console.error(`[axe-mcp] axe Scan full page click skipped: ${JSON.stringify(scanFullPage)}`);
     }
   } else {
     console.error("[axe-mcp] AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set; skipping sign-in");
     scanFullPage = { ok: false, skipped: true, reason: "AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set" };
+    weFoundSomethingSave = { ok: false, skipped: true, reason: "AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set" };
   }
 
   // if (process.env.AXE_SERVER_URL) {
@@ -190,6 +203,7 @@ async function main() {
         axePanel,
         signIn,
         scanFullPage,
+        weFoundSomethingSave,
         prepared,
         readyAt: new Date().toISOString(),
       },
