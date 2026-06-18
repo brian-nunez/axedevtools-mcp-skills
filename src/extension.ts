@@ -429,11 +429,33 @@ export async function signInToAxe(opts: SignInOptions) {
       let lastResult: any = null;
       for (let attempt = 1; attempt <= 4; attempt++) {
         await cdp.send("Page.bringToFront", {}, loginSession).catch(() => {});
-        await focusField(field);
-        const result = await cdp
-          .evalIn(loginSession, fillFieldExpr(field, value))
+        const rect = await focusField(field);
+        if (!rect) {
+          lastResult = { ok: false, reason: `${label} field not found`, attempt, label };
+          await sleep(350);
+          continue;
+        }
+
+        await cdp.evalIn(loginSession, clearFieldExpr(field)).catch(() => null);
+        await sleep(100);
+        await cdp.send("Input.insertText", { text: value }, loginSession).catch(async () => {
+          for (const ch of value) {
+            await cdp.send("Input.dispatchKeyEvent", { type: "char", text: ch, unmodifiedText: ch }, loginSession);
+            await sleep(15);
+          }
+        });
+        await sleep(250);
+
+        let result = await cdp
+          .evalIn(loginSession, verifyFieldExpr(field, value))
           .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
           .catch((e) => ({ ok: false, reason: e.message }));
+        if (!result?.ok) {
+          result = await cdp
+            .evalIn(loginSession, fillFieldExpr(field, value))
+            .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+            .catch((e) => ({ ok: false, reason: e.message }));
+        }
         lastResult = { ...result, attempt, label };
         if (result?.ok) return lastResult;
         await sleep(350);
@@ -509,8 +531,8 @@ export async function signInToAxe(opts: SignInOptions) {
 
 function redactFillResult(result: any) {
   if (!result || typeof result !== "object") return result;
-  const { expectedLength, actualLength, attempt, label, ok, reason, selector, tagName, type, name, id, autocomplete } = result;
-  return { ok, reason, selector, tagName, type, name, id, autocomplete, expectedLength, actualLength, attempt, label };
+  const { expectedLength, actualLength, attempt, label, ok, reason, selector, tagName, type, name, id, autocomplete, method } = result;
+  return { ok, reason, method, selector, tagName, type, name, id, autocomplete, expectedLength, actualLength, attempt, label };
 }
 
 function fieldDiscoverySource(field: "username" | "password") {
@@ -587,6 +609,80 @@ function focusDiscoveredFieldExpr(field: "username" | "password") {
     ${fieldDiscoverySource(field)}
     const el=findField();
     if(el){el.focus();try{el.click();}catch(_){}}
+  })()`;
+}
+
+function clearFieldExpr(field: "username" | "password") {
+  return `(async()=>{
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
+    ${fieldDiscoverySource(field)}
+    const deadline=Date.now()+5000;
+    let el=null;
+    while(Date.now()<deadline){
+      el=findField();
+      if(el) break;
+      await wait(100);
+    }
+    if(!el) return JSON.stringify({ok:false, reason:'field not found', field});
+    el.focus();
+    try{el.click();}catch(_){}
+    if(typeof el.select==='function') {
+      try{el.select();}catch(_){}
+    }
+    const setter=(el instanceof HTMLTextAreaElement
+      ? Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set
+      : Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set);
+    if(setter) setter.call(el,''); else el.value='';
+    el.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
+    el.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+    el.focus();
+    return JSON.stringify({ok:true, field});
+  })()`;
+}
+
+function verifyFieldExpr(field: "username" | "password", value: string) {
+  return `(async()=>{
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
+    const expected=${JSON.stringify(value)};
+    ${fieldDiscoverySource(field)}
+    const deadline=Date.now()+3000;
+    let el=null;
+    while(Date.now()<deadline){
+      el=findField();
+      if(el) {
+        if(el.value===expected) {
+          el.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
+          el.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+          return JSON.stringify({
+            ok:true,
+            method:'cdp-insertText',
+            field,
+            selector:el.id ? '#'+el.id : '',
+            tagName:el.tagName,
+            type:el.type||'',
+            name:el.name||'',
+            id:el.id||'',
+            autocomplete:el.autocomplete||'',
+            expectedLength:expected.length,
+            actualLength:el.value.length
+          });
+        }
+      }
+      await wait(100);
+    }
+    return JSON.stringify({
+      ok:false,
+      reason:'typed field value did not match',
+      field,
+      selector:el && el.id ? '#'+el.id : '',
+      tagName:el ? el.tagName : '',
+      type:el ? (el.type||'') : '',
+      name:el ? (el.name||'') : '',
+      id:el ? (el.id||'') : '',
+      autocomplete:el ? (el.autocomplete||'') : '',
+      expectedLength:expected.length,
+      actualLength:el ? (el.value||'').length : 0
+    });
   })()`;
 }
 
