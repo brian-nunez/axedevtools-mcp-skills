@@ -154,7 +154,7 @@ async function main() {
       if (scanFullPage.ok) {
         weFoundSomethingSave = await clickWeFoundSomethingSave(
           info.endpoint,
-          envNumber("AXE_WE_FOUND_SOMETHING_SAVE_WAIT_MS", 15_000)
+          envNumber("AXE_WE_FOUND_SOMETHING_SAVE_WAIT_MS", 60_000)
         );
         console.error(`[axe-mcp] axe optional We found something save: ${JSON.stringify(weFoundSomethingSave)}`);
       } else {

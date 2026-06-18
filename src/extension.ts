@@ -116,9 +116,11 @@ export async function clickScanFullPage(endpoint: string, timeoutMs = 30_000) {
   }
 }
 
-export async function clickWeFoundSomethingSave(endpoint: string, timeoutMs = 15_000) {
+export async function clickWeFoundSomethingSave(endpoint: string, timeoutMs = 60_000) {
   const cdp = await CDP.connect(endpoint);
   const deadline = Date.now() + timeoutMs;
+  let sawModal = false;
+  let lastResult: any = null;
   try {
     while (Date.now() < deadline) {
       const panel = await panelTarget(cdp, Date.now() + 2_500, 250);
@@ -136,7 +138,9 @@ export async function clickWeFoundSomethingSave(endpoint: string, timeoutMs = 15
           .catch((e) => ({ ok: false, reason: e.message }));
         await cdp.detach(session);
         session = null;
-        if (result?.saved || result?.attempted) {
+        lastResult = { ...result, targetUrl: panel.url };
+        if (result?.attempted) sawModal = true;
+        if (result?.saved) {
           return { ...result, targetUrl: panel.url };
         }
       } catch {
@@ -144,6 +148,9 @@ export async function clickWeFoundSomethingSave(endpoint: string, timeoutMs = 15
       }
 
       await sleep(500);
+    }
+    if (sawModal) {
+      return lastResult ?? { ok: false, attempted: true, saved: false, reason: "We found something modal appeared but Save was not clicked before timeout" };
     }
     return { ok: true, attempted: false, saved: false, reason: "We found something modal did not appear" };
   } finally {
@@ -299,7 +306,7 @@ function scanFullPageExpr() {
       const s=getComputedStyle(e);
       return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden';
     };
-    const deadline=Date.now()+2500;
+    const deadline=Date.now()+5000;
     let button=null;
     while(Date.now()<deadline){
       button=deep('button[type="button"]',document,[]).find(b=>visible(b) && /^Scan full page$/i.test(text(b)) && !b.disabled);
@@ -336,7 +343,7 @@ function weFoundSomethingSaveExpr() {
       const s=getComputedStyle(e);
       return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden';
     };
-    const deadline=Date.now()+2500;
+    const deadline=Date.now()+5000;
     let heading=null;
     while(Date.now()<deadline){
       heading=deep('h1,h2,h3,[role="heading"]',document,[]).find(h=>visible(h) && /^We found something$/i.test(text(h)));
@@ -359,6 +366,14 @@ function weFoundSomethingSaveExpr() {
     for(const scope of scopes){
       button=deep('button,[role=button]',scope,[]).find(b=>visible(b) && /^Save$/i.test(text(b)) && !b.disabled);
       if(button) break;
+    }
+    const buttonDeadline=Date.now()+5000;
+    while(!button && Date.now()<buttonDeadline){
+      for(const scope of scopes){
+        button=deep('button,[role=button]',scope,[]).find(b=>visible(b) && /^Save$/i.test(text(b)) && !b.disabled);
+        if(button) break;
+      }
+      if(!button) await wait(150);
     }
     if(!button) {
       return JSON.stringify({
