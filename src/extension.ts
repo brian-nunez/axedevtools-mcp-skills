@@ -330,7 +330,10 @@ export async function signInToAxe(opts: SignInOptions) {
     await cdp.send("Page.bringToFront", {}, loginSession);
     await sleep(3000);
 
-    // Helper: bring page to front + wait for page ready + JS focus + repeated mouse clicks before typing
+    // Helper: bring page to front + wait for page ready + JS focus + repeated mouse clicks.
+    // Used to make the auth page visible/active, but field population below does
+    // not depend on OS-level keyboard focus because that has proven unreliable
+    // under Xvfb/VNC.
     const focusField = async (selector: string) => {
       await cdp.send("Page.bringToFront", {}, loginSession);
       await sleep(300);
@@ -370,69 +373,184 @@ export async function signInToAxe(opts: SignInOptions) {
       return rect;
     };
 
-    // Focus #username and type email
+    const fillField = async (selector: string, value: string, label: string) => {
+      let lastResult: any = null;
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        await cdp.send("Page.bringToFront", {}, loginSession).catch(() => {});
+        await focusField(selector);
+        const result = await cdp
+          .evalIn(loginSession, fillFieldExpr(selector, value))
+          .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+          .catch((e) => ({ ok: false, reason: e.message }));
+        lastResult = { ...result, attempt, label };
+        if (result?.ok) return lastResult;
+        await sleep(350);
+      }
+      return lastResult ?? { ok: false, reason: `${label} fill did not run`, attempt: 0, label };
+    };
+
+    const clickButton = async (label: string, rx: RegExp, timeoutMs = 10_000) => {
+      const deadline = Date.now() + timeoutMs;
+      let lastResult: any = null;
+      while (Date.now() < deadline) {
+        await cdp.send("Page.bringToFront", {}, loginSession).catch(() => {});
+        const result = await cdp
+          .evalIn(loginSession, clickButtonExpr(rx.source, rx.flags))
+          .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+          .catch((e) => ({ ok: false, reason: e.message }));
+        lastResult = { ...result, label };
+        if (result?.ok) return lastResult;
+        await sleep(300);
+      }
+      return lastResult ?? { ok: false, reason: `${label} button click did not run`, label };
+    };
+
+    // Focus and robustly fill #username. The fill helper verifies the actual DOM
+    // value before we click Next, so startup does not silently continue with an
+    // empty or partially-filled email field.
     const usernameRect = await focusField("#username");
     if (!usernameRect) {
       await cdp.detach(loginSession);
       return { ok: false, reason: "#username not found", clickResult };
     }
-    await sleep(2000);
-    for (const ch of opts.email) {
-      await cdp.send("Input.dispatchKeyEvent", { type: "char", text: ch, unmodifiedText: ch }, loginSession);
-      await sleep(50);
-    }
-    await sleep(1000);
-
-    // Click Next via CDP mouse event
-    const nextRect = await cdp
-      .evalIn(loginSession, `(()=>{
-        const text=e=>((e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();
-        const btn=[...document.querySelectorAll('button[type="submit"]')].find(b=>/Next/i.test(text(b)));
-        if(!btn) return null;
-        const r=btn.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};
-      })()`)
-      .catch(() => null);
-    if (!nextRect) {
+    const usernameFill = await fillField("#username", opts.email, "username");
+    if (!usernameFill.ok) {
       await cdp.detach(loginSession);
-      return { ok: false, reason: "Next button not found", clickResult };
+      return { ok: false, reason: "failed to fill #username", clickResult, usernameFill };
     }
-    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", x: nextRect.x, y: nextRect.y, clickCount: 1 }, loginSession);
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", x: nextRect.x, y: nextRect.y, clickCount: 1 }, loginSession);
-    await sleep(1000);
 
-    // Focus #password and type password
+    const nextClick = await clickButton("Next", /Next/i);
+    if (!nextClick.ok) {
+      await cdp.detach(loginSession);
+      return { ok: false, reason: "Next button not found/clickable", clickResult, usernameFill, nextClick };
+    }
+
+    // Focus and robustly fill #password after the password screen appears.
     const passwordRect = await focusField("#password");
     if (!passwordRect) {
       await cdp.detach(loginSession);
-      return { ok: false, reason: "#password not found", clickResult };
+      return { ok: false, reason: "#password not found", clickResult, usernameFill, nextClick };
     }
-    await sleep(2000);
-    for (const ch of opts.password) {
-      await cdp.send("Input.dispatchKeyEvent", { type: "char", text: ch, unmodifiedText: ch }, loginSession);
-      await sleep(50);
+    const passwordFill = await fillField("#password", opts.password, "password");
+    if (!passwordFill.ok) {
+      await cdp.detach(loginSession);
+      return { ok: false, reason: "failed to fill #password", clickResult, usernameFill, nextClick, passwordFill };
     }
-    await sleep(1000);
 
-    // Click Submit via CDP mouse event
-    const submitRect = await cdp
-      .evalIn(loginSession, `(()=>{
-        const text=e=>((e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();
-        const btn=[...document.querySelectorAll('button[type="submit"]')].find(b=>/Submit/i.test(text(b)));
-        if(!btn) return null;
-        const r=btn.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};
-      })()`)
-      .catch(() => null);
-    const submitClicked = !!submitRect;
-    if (submitRect) {
-      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", x: submitRect.x, y: submitRect.y, clickCount: 1 }, loginSession);
-      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", x: submitRect.x, y: submitRect.y, clickCount: 1 }, loginSession);
-    }
+    const submitClick = await clickButton("Submit", /Submit|Sign in|Log in/i);
 
     await cdp.detach(loginSession);
-    return { ok: !!submitClicked, onPrem, clickResult, submitClicked };
+    return {
+      ok: !!submitClick.ok,
+      onPrem,
+      clickResult,
+      usernameFill: redactFillResult(usernameFill),
+      nextClick,
+      passwordFill: redactFillResult(passwordFill),
+      submitClicked: !!submitClick.ok,
+      submitClick,
+    };
   } finally {
     cdp.close();
   }
+}
+
+function redactFillResult(result: any) {
+  if (!result || typeof result !== "object") return result;
+  const { expectedLength, actualLength, attempt, label, ok, reason, selector, tagName, type } = result;
+  return { ok, reason, selector, tagName, type, expectedLength, actualLength, attempt, label };
+}
+
+function fillFieldExpr(selector: string, value: string) {
+  return `(async()=>{
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
+    const selector=${JSON.stringify(selector)};
+    const expected=${JSON.stringify(value)};
+    const deadline=Date.now()+8000;
+    let el=null;
+    while(Date.now()<deadline){
+      el=document.querySelector(selector);
+      if(el && !el.disabled && !el.readOnly && el.getBoundingClientRect().width>0 && el.getBoundingClientRect().height>0) break;
+      await wait(150);
+    }
+    if(!el) return JSON.stringify({ok:false, reason:'field not found or not interactable', selector, expectedLength:expected.length});
+
+    const fire=(type)=>el.dispatchEvent(new Event(type,{bubbles:true,cancelable:true}));
+    const inputSetter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set;
+    const textAreaSetter=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set;
+    const setter=el instanceof HTMLTextAreaElement ? textAreaSetter : inputSetter;
+    const setValue=(v)=>{
+      el.focus();
+      try{el.click();}catch(_){}
+      if(typeof el.select==='function') {
+        try{el.select();}catch(_){}
+      }
+      if(setter) setter.call(el,v);
+      else el.value=v;
+      fire('beforeinput');
+      fire('input');
+      fire('change');
+      fire('blur');
+      el.focus();
+    };
+
+    for(let i=0;i<4;i++){
+      setValue('');
+      await wait(80);
+      setValue(expected);
+      await wait(150);
+      if(el.value===expected) {
+        return JSON.stringify({
+          ok:true,
+          selector,
+          tagName:el.tagName,
+          type:el.type||'',
+          expectedLength:expected.length,
+          actualLength:el.value.length
+        });
+      }
+    }
+
+    return JSON.stringify({
+      ok:false,
+      reason:'field value did not match after retries',
+      selector,
+      tagName:el.tagName,
+      type:el.type||'',
+      expectedLength:expected.length,
+      actualLength:(el.value||'').length
+    });
+  })()`;
+}
+
+function clickButtonExpr(pattern: string, flags: string) {
+  return `(async()=>{
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
+    const rx=new RegExp(${JSON.stringify(pattern)},${JSON.stringify(flags)});
+    const text=e=>((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();
+    const isVisible=e=>{
+      const r=e.getBoundingClientRect();
+      const s=getComputedStyle(e);
+      return r.width>0 && r.height>0 && s.visibility!=='hidden' && s.display!=='none';
+    };
+    const deadline=Date.now()+3000;
+    let btn=null;
+    while(Date.now()<deadline){
+      const buttons=[...document.querySelectorAll('button,[role=button],input[type=submit],input[type=button]')];
+      btn=buttons.find(b=>rx.test(text(b) || b.value || '') && isVisible(b) && !b.disabled);
+      if(!btn) btn=buttons.find(b=>b.type==='submit' && isVisible(b) && !b.disabled);
+      if(btn) break;
+      await wait(150);
+    }
+    if(!btn) return JSON.stringify({ok:false, reason:'button not found', pattern:${JSON.stringify(pattern)}});
+    btn.scrollIntoView({block:'center', inline:'center'});
+    await wait(100);
+    try{btn.focus();}catch(_){}
+    btn.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
+    btn.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
+    btn.click();
+    return JSON.stringify({ok:true, clicked:text(btn) || btn.value || btn.type || btn.tagName});
+  })()`;
 }
 
 function signInClickExpr(clickEmailLink: boolean) {
@@ -533,6 +651,24 @@ function loginExpr(email: string, password: string) {
     const text=e=>((e.getAttribute&&e.getAttribute('aria-label'))||e.placeholder||e.textContent||'').replace(/\\s+/g,' ').trim();
     const fire=el=>['input','change'].forEach(t=>el.dispatchEvent(new Event(t,{bubbles:true})));
     const click=el=>['mousedown','mouseup','click'].forEach(t=>el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:window})));
+    const setField=async(el,value)=>{
+      const setter=(el instanceof HTMLTextAreaElement
+        ? Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value')?.set
+        : Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')?.set);
+      for(let i=0;i<4;i++){
+        el.focus();
+        try{el.click();}catch(_){}
+        if(typeof el.select==='function') { try{el.select();}catch(_){} }
+        if(setter) setter.call(el,''); else el.value='';
+        fire(el);
+        await wait(80);
+        if(setter) setter.call(el,value); else el.value=value;
+        fire(el);
+        await wait(150);
+        if(el.value===value) return true;
+      }
+      return false;
+    };
     const buttons=()=>deep('button,[role=button],a',document,[]);
     const buttonByText=rx=>buttons().find(e=>rx.test(text(e)));
     const start=buttonByText(/log\\s*in|sign\\s*in|connect|account/i);
@@ -541,11 +677,19 @@ function loginExpr(email: string, password: string) {
     const emailInput=inputs.find(e=>/(email|user|login)/i.test([e.type,e.name,e.id,e.placeholder,text(e)].join(' '))) || inputs.find(e=>e.type==='email') || inputs[0];
     const passInput=inputs.find(e=>e.type==='password'||/(password|pass)/i.test([e.name,e.id,e.placeholder,text(e)].join(' ')));
     if(!emailInput || !passInput) return JSON.stringify({ok:false, reason:'email/password inputs not found', inputs:inputs.map(e=>({type:e.type,name:e.name,id:e.id,placeholder:e.placeholder})).slice(0,20), buttons:[...new Set(buttons().map(text).filter(Boolean))].slice(0,20)});
-    emailInput.focus(); emailInput.value=${JSON.stringify(email)}; fire(emailInput);
-    passInput.focus(); passInput.value=${JSON.stringify(password)}; fire(passInput);
+    const emailOk=await setField(emailInput,${JSON.stringify(email)});
+    const passOk=await setField(passInput,${JSON.stringify(password)});
+    if(!emailOk || !passOk) return JSON.stringify({
+      ok:false,
+      reason:'credential field verification failed',
+      emailOk,
+      passOk,
+      emailLength:(emailInput.value||'').length,
+      passwordLength:(passInput.value||'').length
+    });
     const submit=buttonByText(/log\\s*in|sign\\s*in|submit|continue/i) || deep('button,[type=submit]',document,[])[0];
     if(!submit) return JSON.stringify({ok:false, reason:'submit button not found'});
     click(submit);
-    return JSON.stringify({ok:true, clicked:text(submit)});
+    return JSON.stringify({ok:true, clicked:text(submit), emailOk, passOk});
   })()`;
 }
