@@ -50,6 +50,18 @@ async function completeAxeOnboardingWithRetries(
   return lastResult ?? { attempted: false, completed: false, attempt: 0, attempts, timeoutMs };
 }
 
+async function showAxeDevToolsPanelWithRetries(endpoint: string, attempts: number, timeoutMs: number, delayMs: number) {
+  let lastResult: any = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const result = await showAxeDevToolsPanel(endpoint, timeoutMs);
+    lastResult = { ...result, attempt, attempts, timeoutMs };
+    console.error(`[axe-mcp] axe DevTools panel attempt ${attempt}/${attempts}: ${JSON.stringify(result)}`);
+    if (result.panelShown && result.panelTargetFound) return lastResult;
+    if (attempt < attempts) await sleep(delayMs);
+  }
+  return lastResult ?? { panelShown: false, panelTargetFound: false, panelUrl: null, attempt: 0, attempts, timeoutMs };
+}
+
 async function main() {
   if (!targetUrl) {
     throw new Error("TARGET_URL or AXE_TARGET_URL is required for startup preparation.");
@@ -71,8 +83,12 @@ async function main() {
     envNumber("AXE_ONBOARDING_RETRY_DELAY_MS", 300)
   );
 
-  const axePanel = await showAxeDevToolsPanel(info.endpoint);
-  console.error(`[axe-mcp] axe DevTools panel: ${JSON.stringify(axePanel)}`);
+  const axePanel = await showAxeDevToolsPanelWithRetries(
+    info.endpoint,
+    envNumber("AXE_PANEL_OPEN_ATTEMPTS", 3),
+    envNumber("AXE_PANEL_OPEN_ATTEMPT_MS", 2_500),
+    envNumber("AXE_PANEL_OPEN_RETRY_DELAY_MS", 300)
+  );
   if (!axePanel.panelShown || !axePanel.panelTargetFound) {
     throw new Error(`Failed to open the axe DevTools panel: ${JSON.stringify(axePanel)}`);
   }

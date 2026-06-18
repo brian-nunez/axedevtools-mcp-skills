@@ -6,11 +6,12 @@ const DEEP =
   "function deep(sel,root,acc){try{root.querySelectorAll(sel).forEach(e=>acc.push(e))}catch(_){}" +
   "for(const e of root.querySelectorAll('*'))if(e.shadowRoot)deep(sel,e.shadowRoot,acc);return acc;}";
 
-export async function showAxeDevToolsPanel(endpoint: string) {
+export async function showAxeDevToolsPanel(endpoint: string, timeoutMs = 5_000, pollMs = 250) {
   const cdp = await CDP.connect(endpoint);
+  const deadline = Date.now() + timeoutMs;
   try {
-    const panelShown = await showAxePanel(cdp);
-    const panel = panelShown ? await panelTarget(cdp) : null;
+    const panelShown = await showAxePanel(cdp, deadline, pollMs);
+    const panel = panelShown ? await panelTarget(cdp, deadline, pollMs) : null;
     return { panelShown, panelTargetFound: !!panel, panelUrl: panel?.url ?? null };
   } finally {
     cdp.close();
@@ -89,8 +90,8 @@ function extensionTargets(targets: TargetInfo[]) {
     .sort((a, b) => Number(/panel\.html/i.test(b.url)) - Number(/panel\.html/i.test(a.url)));
 }
 
-async function showAxePanel(cdp: CDP) {
-  for (let i = 0; i < 40; i++) {
+async function showAxePanel(cdp: CDP, deadline = Date.now() + 20_000, pollMs = 500) {
+  while (Date.now() < deadline) {
     const fes = (await cdp.targets()).filter((t) => FE_RE.test(t.url));
     for (const fe of fes) {
       let session: string | null = null;
@@ -118,7 +119,7 @@ async function showAxePanel(cdp: CDP) {
         if (session) await cdp.detach(session).catch(() => {});
       }
     }
-    await sleep(500);
+    await sleep(pollMs);
   }
   return false;
 }
@@ -216,11 +217,11 @@ function dismissAiPopupExpr() {
   })()`;
 }
 
-async function panelTarget(cdp: CDP): Promise<TargetInfo | null> {
-  for (let i = 0; i < 40; i++) {
+async function panelTarget(cdp: CDP, deadline = Date.now() + 12_000, pollMs = 300): Promise<TargetInfo | null> {
+  while (Date.now() < deadline) {
     const panel = (await cdp.targets()).find((t) => PANEL_RE.test(t.url));
     if (panel) return panel;
-    await sleep(300);
+    await sleep(pollMs);
   }
   return null;
 }
