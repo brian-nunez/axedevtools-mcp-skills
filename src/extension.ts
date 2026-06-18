@@ -38,7 +38,7 @@ export async function completeAxeOnboarding(endpoint: string, timeoutMs = 20_000
             return { ...result, targetUrl: target.url };
           }
         } catch {
-          if (session) await cdp.detach(session).catch(() => {});
+          if (session) await cdp.detach(session).catch(() => { });
         }
       }
       await sleep(500);
@@ -69,7 +69,7 @@ export async function dismissAxeAiPopup(endpoint: string, timeoutMs = 15_000) {
             return { ...result, targetUrl: target.url };
           }
         } catch {
-          if (session) await cdp.detach(session).catch(() => {});
+          if (session) await cdp.detach(session).catch(() => { });
         }
       }
       await sleep(500);
@@ -107,7 +107,7 @@ async function showAxePanel(cdp: CDP, deadline = Date.now() + 20_000, pollMs = 5
           await cdp
             .evalIn(session, `(()=>{try{InspectorFrontendAPI.showPanel(${JSON.stringify(panelId)});return true}catch(e){return false}})()`)
             .catch(() => false);
-          await cdp.send("Target.activateTarget", { targetId: fe.targetId }).catch(() => {});
+          await cdp.send("Target.activateTarget", { targetId: fe.targetId }).catch(() => { });
           await cdp.detach(session);
           return true;
         }
@@ -116,7 +116,7 @@ async function showAxePanel(cdp: CDP, deadline = Date.now() + 20_000, pollMs = 5
         // install-success tab and rebinds DevTools to the inspected page.
         // Ignore stale targets and continue polling.
       } finally {
-        if (session) await cdp.detach(session).catch(() => {});
+        if (session) await cdp.detach(session).catch(() => { });
       }
     }
     await sleep(pollMs);
@@ -232,6 +232,11 @@ export interface ConfigureExtensionOptions {
   password?: string;
 }
 
+export interface ConfigureSettingsOptions {
+  endpoint: string;
+  serverUrl: string;
+}
+
 export async function configureAxeExtension(opts: ConfigureExtensionOptions) {
   const cdp = await CDP.connect(opts.endpoint);
   try {
@@ -277,6 +282,61 @@ function panelStateExpr() {
       buttons: [...new Set(deep('button,[role=button],a',document,[]).map(text).filter(Boolean))].slice(0,30),
       body: (document.body?document.body.innerText:'').replace(/\\s+/g,' ').slice(0,1000)
     });
+  })()`;
+}
+
+export async function configureAxeSettings(opts: ConfigureSettingsOptions) {
+  const cdp = await CDP.connect(opts.endpoint);
+  try {
+    const panel = await panelTarget(cdp);
+    if (!panel) return { ok: false, reason: "axe panel target not found" };
+    const session = await cdp.attach(panel.targetId);
+    const result = await cdp
+      .evalIn(session, settingsExpr(opts.serverUrl))
+      .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+      .catch((e) => ({ ok: false, error: e.message }));
+    await cdp.detach(session);
+    return result;
+  } finally {
+    cdp.close();
+  }
+}
+
+function settingsExpr(serverUrl: string) {
+  return `(async()=>{
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
+    const click=el=>['mousedown','mouseup','click'].forEach(t=>el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:window})));
+
+    const menuTrigger=document.querySelector('#menu-trigger2');
+    if(!menuTrigger) return JSON.stringify({ok:false, reason:'#menu-trigger2 not found'});
+    click(menuTrigger);
+    await wait(600);
+
+    const settingsItem=document.querySelector('#action-list-item4');
+    if(!settingsItem) return JSON.stringify({ok:false, reason:'#action-list-item4 not found'});
+    click(settingsItem);
+    await wait(800);
+
+    const defaultCheckbox=document.querySelector('#settings-user-default-settings');
+    if(defaultCheckbox && defaultCheckbox.checked) {
+      click(defaultCheckbox);
+      await wait(300);
+    }
+
+    const serverInput=document.querySelector('#settings-axe-server-url');
+    if(!serverInput) return JSON.stringify({ok:false, reason:'#settings-axe-server-url not found', defaultCheckboxFound:!!defaultCheckbox});
+    serverInput.focus();
+    serverInput.value=${JSON.stringify(serverUrl)};
+    serverInput.dispatchEvent(new Event('input',{bubbles:true}));
+    serverInput.dispatchEvent(new Event('change',{bubbles:true}));
+    await wait(300);
+
+    const saveButton=document.querySelector('#save-button');
+    if(!saveButton) return JSON.stringify({ok:false, reason:'#save-button not found'});
+    click(saveButton);
+    await wait(1000);
+
+    return JSON.stringify({ok:true, serverUrl:${JSON.stringify(serverUrl)}});
   })()`;
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { desktopBounds, startBrowser, waitForCdp } from "./browser.js";
-import { completeAxeOnboarding, configureAxeExtension, dismissAxeAiPopup, showAxeDevToolsPanel } from "./extension.js";
+import { completeAxeOnboarding, configureAxeExtension, configureAxeSettings, dismissAxeAiPopup, showAxeDevToolsPanel } from "./extension.js";
 import { waitForAndCloseInstallSuccess } from "./setup.js";
 import { CDP } from "./cdp.js";
 import { writeFile } from "node:fs/promises";
@@ -45,7 +45,7 @@ async function maximizeBrowserWindow(endpoint: string) {
 
     const { windowId } = await cdp.send("Browser.getWindowForTarget", { targetId: target.targetId });
     await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "maximized" } });
-    await cdp.send("Browser.setWindowBounds", { windowId, bounds }).catch(() => {});
+    await cdp.send("Browser.setWindowBounds", { windowId, bounds }).catch(() => { });
     return { ok: true, windowId, targetUrl: target.url, bounds };
   } catch (error: any) {
     return { ok: false, reason: error?.message || String(error), bounds };
@@ -147,6 +147,16 @@ async function main() {
     console.error("[axe-mcp] AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set; skipping extension login bootstrap");
   }
 
+  // if (process.env.AXE_SERVER_URL) {
+  //   const result = await configureAxeSettings({
+  //     endpoint: info.endpoint,
+  //     serverUrl: process.env.AXE_SERVER_URL,
+  //   });
+  //   console.error(`[axe-mcp] axe settings configure: ${JSON.stringify(result)}`);
+  // } else {
+  //   console.error("[axe-mcp] AXE_SERVER_URL not set; skipping settings configuration");
+  // }
+
   const prepared = await verifyPreparedBrowser(info.endpoint, targetUrl);
   console.error(`[axe-mcp] prepared desktop state: ${JSON.stringify(prepared)}`);
   if (!prepared.ok) {
@@ -190,6 +200,6 @@ main().catch((error) => {
       2
     )
   )
-    .catch(() => {})
+    .catch(() => { })
     .finally(() => process.exit(1));
 });
