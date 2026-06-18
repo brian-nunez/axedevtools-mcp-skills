@@ -18,6 +18,50 @@ export async function showAxeDevToolsPanel(endpoint: string, timeoutMs = 5_000, 
   }
 }
 
+export async function reloadAxeDevToolsPanel(endpoint: string, timeoutMs = 10_000) {
+  const cdp = await CDP.connect(endpoint);
+  const deadline = Date.now() + timeoutMs;
+  try {
+    const panelShown = await showAxePanel(cdp, Date.now() + 2_500, 250);
+    const panel = await panelTarget(cdp, Date.now() + 2_500, 250);
+    if (!panel) return { ok: false, panelShown, reason: "axe panel target not found before reload" };
+
+    const session = await cdp.attach(panel.targetId);
+    try {
+      await cdp
+        .evalIn(
+          session,
+          `(()=>{ location.reload(); return true; })()`
+        )
+        .catch((error) => {
+          throw new Error(`Failed to reload axe panel frame: ${error?.message || error}`);
+        });
+    } finally {
+      await cdp.detach(session).catch(() => {});
+    }
+
+    let reloaded = false;
+    while (Date.now() < deadline) {
+      const current = await panelTarget(cdp, Date.now() + 500, 100);
+      if (current?.targetId === panel.targetId || current?.url === panel.url) {
+        reloaded = true;
+        break;
+      }
+      await sleep(100);
+    }
+    return {
+      ok: reloaded,
+      panelShown,
+      panelTargetFound: reloaded,
+      panelUrl: panel.url,
+      reloaded: true,
+      method: "location.reload",
+    };
+  } finally {
+    cdp.close();
+  }
+}
+
 export async function completeAxeOnboarding(endpoint: string, timeoutMs = 20_000) {
   const cdp = await CDP.connect(endpoint);
   const deadline = Date.now() + timeoutMs;
@@ -113,6 +157,17 @@ export async function clickScanFullPage(endpoint: string, timeoutMs = 30_000) {
             session = null;
             return { ...verified, click: result, targetUrl: panel.url };
           }
+          await cdp.detach(session);
+          session = null;
+          return {
+            ok: false,
+            attempted: true,
+            clicked: true,
+            reason: "Scan full page was clicked once but no state change was confirmed",
+            click: result,
+            verified,
+            targetUrl: panel.url,
+          };
         }
         await cdp.detach(session);
         session = null;
@@ -328,6 +383,7 @@ function scanFullPageClickExpr() {
       ariaBusy:b.getAttribute('aria-busy')||'',
       className:b.className||''
     });
+    const scanButtonText=t=>/^(Scan full page|Full Page Scan)$/i.test(t);
     const activate=el=>{
       const r=el.getBoundingClientRect();
       const init={bubbles:true,cancelable:true,composed:true,view:window,clientX:r.left+r.width/2,clientY:r.top+r.height/2};
@@ -345,7 +401,7 @@ function scanFullPageClickExpr() {
     };
     const findButton=()=>deep('button[type="button"]',document,[]).find(b=>
       visible(b) &&
-      /^Scan full page$/i.test(text(b)) &&
+      scanButtonText(text(b)) &&
       !b.disabled &&
       b.getAttribute('aria-disabled')!=='true' &&
       b.getAttribute('aria-busy')!=='true'
@@ -373,7 +429,7 @@ function scanFullPageClickExpr() {
       return JSON.stringify({
         ok:false,
         attempted:false,
-        reason:'Scan full page button not found',
+        reason:'Scan full page / Full Page Scan button not found',
         buttons:deep('button',document,[]).map(b=>({type:b.type||'', text:text(b), disabled:!!b.disabled})).filter(b=>b.text).slice(0,30)
       });
     }
@@ -398,7 +454,8 @@ function scanFullPageVerifyExpr() {
     const norm=s=>(s||'').replace(/\\s+/g,' ').trim();
     const text=e=>norm((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'');
     const body=()=>norm(document.body ? document.body.innerText : '');
-    const button=()=>deep('button[type="button"]',document,[]).find(b=>/^Scan full page$/i.test(text(b)));
+    const scanButtonText=t=>/^(Scan full page|Full Page Scan)$/i.test(t);
+    const button=()=>deep('button[type="button"]',document,[]).find(b=>scanButtonText(text(b)));
     const deadline=Date.now()+6000;
     while(Date.now()<deadline){
       const b=button();
@@ -411,7 +468,7 @@ function scanFullPageVerifyExpr() {
         return JSON.stringify({
           ok:true,
           attempted:true,
-          clicked:'Scan full page',
+          clicked:'Scan full page / Full Page Scan',
           signal:{buttonGone, disabled, scanning, results}
         });
       }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { desktopBounds, startBrowser, waitForCdp } from "./browser.js";
-import { clickScanFullPage, completeAxeOnboarding, configureAxeSettings, dismissAxeAiPopup, showAxeDevToolsPanel, signInToAxe } from "./extension.js";
+import { clickScanFullPage, completeAxeOnboarding, configureAxeSettings, dismissAxeAiPopup, reloadAxeDevToolsPanel, showAxeDevToolsPanel, signInToAxe } from "./extension.js";
 import { waitForAndCloseInstallSuccess } from "./setup.js";
 import { CDP } from "./cdp.js";
 import { writeFile } from "node:fs/promises";
@@ -216,6 +216,7 @@ async function main() {
   let weFoundSomethingSaveWatcher: any = null;
   let postAuthTargetRestore: any = null;
   let postAuthAxePanel: any = null;
+  let postAuthAxePanelReload: any = null;
   if (process.env.AXE_LOGIN_EMAIL && process.env.AXE_LOGIN_PASSWORD) {
     const result = await signInToAxe({
       endpoint: info.endpoint,
@@ -246,18 +247,30 @@ async function main() {
       );
       console.error(`[axe-mcp] post-auth original axe DevTools panel: ${JSON.stringify(postAuthAxePanel)}`);
 
-      await sleep(envNumber("AXE_BEFORE_SCAN_SETTLE_MS", 2_000));
-      scanFullPage = await clickScanFullPage(info.endpoint, envNumber("AXE_SCAN_FULL_PAGE_WAIT_MS", 30_000));
-      console.error(`[axe-mcp] axe Scan full page click: ${JSON.stringify(scanFullPage)}`);
-      if (scanFullPage.ok) {
-        weFoundSomethingSaveWatcher = startOptionalPopupWatcher(
-          info.endpoint,
-          envNumber("AXE_WE_FOUND_SOMETHING_SAVE_WAIT_MS", 60_000)
-        );
-        console.error(`[axe-mcp] axe optional We found something watcher: ${JSON.stringify(weFoundSomethingSaveWatcher)}`);
+      postAuthAxePanelReload = await reloadAxeDevToolsPanel(
+        info.endpoint,
+        envNumber("AXE_PANEL_RELOAD_WAIT_MS", 10_000)
+      );
+      console.error(`[axe-mcp] post-auth axe DevTools panel reload: ${JSON.stringify(postAuthAxePanelReload)}`);
+
+      if (process.env.AXE_AUTO_SCAN_FULL_PAGE === "1") {
+        await sleep(envNumber("AXE_BEFORE_SCAN_SETTLE_MS", 2_000));
+        scanFullPage = await clickScanFullPage(info.endpoint, envNumber("AXE_SCAN_FULL_PAGE_WAIT_MS", 30_000));
+        console.error(`[axe-mcp] axe Scan full page click: ${JSON.stringify(scanFullPage)}`);
+        if (scanFullPage.ok) {
+          weFoundSomethingSaveWatcher = startOptionalPopupWatcher(
+            info.endpoint,
+            envNumber("AXE_WE_FOUND_SOMETHING_SAVE_WAIT_MS", 60_000)
+          );
+          console.error(`[axe-mcp] axe optional We found something watcher: ${JSON.stringify(weFoundSomethingSaveWatcher)}`);
+        } else {
+          weFoundSomethingSaveWatcher = { started: false, skipped: true, reason: "Scan full page did not complete" };
+          console.error(`[axe-mcp] axe optional We found something watcher skipped: ${JSON.stringify(weFoundSomethingSaveWatcher)}`);
+        }
       } else {
-        weFoundSomethingSaveWatcher = { started: false, skipped: true, reason: "Scan full page did not complete" };
-        console.error(`[axe-mcp] axe optional We found something watcher skipped: ${JSON.stringify(weFoundSomethingSaveWatcher)}`);
+        scanFullPage = { ok: true, skipped: true, reason: "AXE_AUTO_SCAN_FULL_PAGE is not enabled; startup leaves scan for the agent" };
+        weFoundSomethingSaveWatcher = { started: false, skipped: true, reason: "Scan was not started during startup" };
+        console.error(`[axe-mcp] axe Scan full page click skipped: ${JSON.stringify(scanFullPage)}`);
       }
     } else {
       scanFullPage = { ok: false, skipped: true, reason: "sign-in did not complete" };
@@ -302,6 +315,7 @@ async function main() {
         signIn,
         postAuthTargetRestore,
         postAuthAxePanel,
+        postAuthAxePanelReload,
         scanFullPage,
         weFoundSomethingSaveWatcher,
         prepared,
