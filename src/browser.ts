@@ -62,6 +62,21 @@ function findBrowser(): string | null {
   return null;
 }
 
+export function desktopSize() {
+  const explicit = process.env.AXE_WINDOW_SIZE;
+  if (explicit && /^\d+x\d+$/.test(explicit)) return explicit;
+
+  const screen = process.env.XVFB_SCREEN || "1920x1080x24";
+  const match = screen.match(/^(\d+)x(\d+)(?:x\d+)?$/);
+  if (match) return `${match[1]}x${match[2]}`;
+  return "1920x1080";
+}
+
+export function desktopBounds() {
+  const [width, height] = desktopSize().split("x").map(Number);
+  return { left: 0, top: 0, width, height };
+}
+
 export interface StartOptions {
   url?: string;
   port?: number;
@@ -101,6 +116,7 @@ export function startBrowser(opts: StartOptions): {
   // Passed as discrete argv (no shell) so the "*" in --remote-allow-origins is literal.
   // AXE_EXTRA_ARGS: "||"-separated extra Chromium flags (e.g. feature toggles).
   const extra = (process.env.AXE_EXTRA_ARGS || "").split("||").map((s) => s.trim()).filter(Boolean);
+  const size = desktopSize();
   const args = [
     `--user-data-dir=${profileDir}`,
     `--load-extension=${extensionDir}`,
@@ -109,6 +125,9 @@ export function startBrowser(opts: StartOptions): {
     "--remote-debugging-address=0.0.0.0",
     "--remote-allow-origins=*",
     "--auto-open-devtools-for-tabs",
+    "--start-maximized",
+    "--window-position=0,0",
+    `--window-size=${size}`,
     "--no-first-run",
     "--no-default-browser-check",
     ...extra,

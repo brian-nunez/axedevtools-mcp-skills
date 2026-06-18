@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { startBrowser, waitForCdp } from "./browser.js";
+import { desktopBounds, startBrowser, waitForCdp } from "./browser.js";
 import { completeAxeOnboarding, configureAxeExtension, dismissAxeAiPopup, showAxeDevToolsPanel } from "./extension.js";
 import { waitForAndCloseInstallSuccess } from "./setup.js";
 import { CDP } from "./cdp.js";
@@ -27,6 +27,28 @@ async function verifyPreparedBrowser(endpoint: string, targetUrl: string) {
       axePanelUrl: axePanel?.url ?? null,
       targetCount: targets.length,
     };
+  } finally {
+    cdp.close();
+  }
+}
+
+async function maximizeBrowserWindow(endpoint: string) {
+  const cdp = await CDP.connect(endpoint);
+  const bounds = desktopBounds();
+  try {
+    const targets = await cdp.targets();
+    const target =
+      targets.find((t) => t.type === "page" && /^https?:/.test(t.url)) ??
+      targets.find((t) => t.type === "page") ??
+      targets[0];
+    if (!target) return { ok: false, reason: "no CDP targets available", bounds };
+
+    const { windowId } = await cdp.send("Browser.getWindowForTarget", { targetId: target.targetId });
+    await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "maximized" } });
+    await cdp.send("Browser.setWindowBounds", { windowId, bounds }).catch(() => {});
+    return { ok: true, windowId, targetUrl: target.url, bounds };
+  } catch (error: any) {
+    return { ok: false, reason: error?.message || String(error), bounds };
   } finally {
     cdp.close();
   }
@@ -71,6 +93,9 @@ async function main() {
   const cdpReady = await waitForCdp(info.endpoint, 45_000);
   console.error(`[axe-mcp] chromium pid=${info.pid} cdp=${info.endpoint} ready=${cdpReady} target=${targetUrl}`);
   if (!cdpReady) process.exit(2);
+
+  const browserWindow = await maximizeBrowserWindow(info.endpoint);
+  console.error(`[axe-mcp] browser window maximize: ${JSON.stringify(browserWindow)}`);
 
   const installSuccess = await waitForAndCloseInstallSuccess(info.endpoint, Number(process.env.AXE_INSTALL_SUCCESS_WAIT_MS || 20_000));
   console.error(`[axe-mcp] axe install-success tab: ${JSON.stringify(installSuccess)}`);
@@ -136,6 +161,7 @@ async function main() {
         targetUrl,
         cdpEndpoint: info.endpoint,
         browserPid: info.pid,
+        browserWindow,
         installSuccess,
         onboarding,
         aiPopup,

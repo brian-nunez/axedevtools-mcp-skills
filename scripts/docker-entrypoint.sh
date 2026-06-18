@@ -92,6 +92,12 @@ cat > "$HOME/.fluxbox/apps" <<'EOF'
 [app] (name=chrome)
   [Maximized] {yes}
 [end]
+[app] (name=chromium)
+  [Maximized] {yes}
+[end]
+[app] (name=google-chrome)
+  [Maximized] {yes}
+[end]
 EOF
 
 fluxbox >/tmp/fluxbox.log 2>&1 &
