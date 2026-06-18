@@ -13,6 +13,7 @@ import { runScript, scriptsAvailable, SCRIPTS_DIR } from "./igt.js";
 import { structureAudit } from "./structure.js";
 import { setupEnvironment } from "./setup.js";
 import { configureAxeExtension, showAxeDevToolsPanel } from "./extension.js";
+import { navigatePage, openPage } from "./navigation.js";
 
 const DEFAULT_ENDPOINT = process.env.AXE_CDP_ENDPOINT || "http://127.0.0.1:9222";
 let lastPid: number | null = null;
@@ -77,6 +78,58 @@ server.registerTool(
   },
   async (a) => {
     const r = await showAxeDevToolsPanel(a.cdpEndpoint || DEFAULT_ENDPOINT);
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.registerTool(
+  "axe_browser_open_page",
+  {
+    title: "Open a new browser page",
+    description:
+      "Open a new Chromium tab/page over CDP without replacing the current target page. " +
+      "Use this when the agent needs a fresh page while keeping the existing page and axe DevTools state available.",
+    inputSchema: {
+      url: z.string().describe("URL to open. If no scheme is provided, https:// is prepended."),
+      cdpEndpoint: z.string().optional().describe(`CDP endpoint. Default ${DEFAULT_ENDPOINT}.`),
+      waitMs: z.number().int().optional().describe("Max milliseconds to wait for the new page to become interactive/complete. Default 15000."),
+      newWindow: z.boolean().optional().describe("Open in a new browser window instead of a new tab/page. Default false."),
+    },
+  },
+  async (a) => {
+    const r = await openPage({
+      endpoint: a.cdpEndpoint || DEFAULT_ENDPOINT,
+      url: a.url,
+      waitMs: a.waitMs,
+      newWindow: a.newWindow,
+    });
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.registerTool(
+  "axe_browser_navigate",
+  {
+    title: "Navigate an existing browser page",
+    description:
+      "Change the URL of an already-open Chromium page over CDP without restarting the browser/container. " +
+      "Use this when the agent needs to modify the address of the target page during IGT work.",
+    inputSchema: {
+      url: z.string().describe("URL to navigate to. If no scheme is provided, https:// is prepended."),
+      cdpEndpoint: z.string().optional().describe(`CDP endpoint. Default ${DEFAULT_ENDPOINT}.`),
+      urlContains: z.string().optional().describe("Navigate the existing page whose current URL contains this string."),
+      targetId: z.string().optional().describe("Navigate this exact CDP targetId. Overrides urlContains."),
+      waitMs: z.number().int().optional().describe("Max milliseconds to wait for the new page to become interactive/complete. Default 15000."),
+    },
+  },
+  async (a) => {
+    const r = await navigatePage({
+      endpoint: a.cdpEndpoint || DEFAULT_ENDPOINT,
+      url: a.url,
+      urlContains: a.urlContains,
+      targetId: a.targetId,
+      waitMs: a.waitMs,
+    });
     return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
   }
 );
