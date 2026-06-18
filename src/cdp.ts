@@ -67,6 +67,10 @@ export class CDP {
     return sessionId;
   }
 
+  async detach(sessionId: string): Promise<void> {
+    await this.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+  }
+
   /** Evaluate an expression in a session; awaits promises and returns the value by value. */
   async evalIn(sessionId: string, expression: string): Promise<any> {
     const r = await this.send(

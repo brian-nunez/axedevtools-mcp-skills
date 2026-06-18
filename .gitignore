@@ -2,3 +2,5 @@ node_modules/
 dist/
 .axe-mcp-chrome/
 *.log
+axe-devtools/
+

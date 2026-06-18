@@ -1,0 +1,9 @@
+.git
+.DS_Store
+node_modules
+dist
+npm-debug.log
+coverage
+tmp
+*.tgz
+axe-devtools/

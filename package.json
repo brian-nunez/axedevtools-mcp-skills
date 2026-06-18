@@ -4,11 +4,13 @@
   "description": "MCP server that drives Deque's real axe DevTools browser extension via the DevTools UI over CDP — shows the panel, clicks Scan, and returns the panel's own results. (Also includes an axe-core/Playwright path.)",
   "type": "module",
   "bin": { "axe-mcp": "dist/index.js" },
-  "files": ["dist"],
+  "files": ["dist", "igt-scripts", "skills", "docs"],
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "smoke": "node test/smoke.mjs"
+    "smoke": "node test/smoke.mjs",
+    "test:structure": "npm run build && node test/structure.mjs",
+    "docker:build": "docker build -t axe-mcp:local ."
   },
   "dependencies": {
     "@axe-core/playwright": "^4.10.0",

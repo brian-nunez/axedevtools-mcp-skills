@@ -8,12 +8,18 @@ import { join } from "node:path";
 export const AXE_EXT_ID = "lhdoppojpmngadmnindnejefpokejbdd";
 
 const BROWSER_CANDIDATES = [
+  process.env.AXE_BROWSER_PATH || "",
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+  "/usr/bin/google-chrome",
+  "/usr/bin/google-chrome-stable",
+  "/opt/google/chrome/chrome",
   "/Applications/BrowserOS.app/Contents/MacOS/BrowserOS",
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
   "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
-];
+].filter(Boolean);
 
 const EXT_PROFILE_DIRS = [
   join(homedir(), "Library/Application Support/BrowserOS/Default/Extensions"),
@@ -23,6 +29,9 @@ const EXT_PROFILE_DIRS = [
 
 /** Locate the unpacked axe DevTools extension dir (latest version) on disk. */
 export function findAxeExtensionDir(): string | null {
+  const explicit = process.env.AXE_EXTENSION_DIR || process.env.AXE_EXT_DIR;
+  if (explicit && existsSync(explicit)) return explicit;
+
   for (const profExt of EXT_PROFILE_DIRS) {
     const dir = join(profExt, AXE_EXT_ID);
     if (!existsSync(dir)) continue;
@@ -35,7 +44,22 @@ export function findAxeExtensionDir(): string | null {
 }
 
 function findBrowser(): string | null {
-  return BROWSER_CANDIDATES.find((b) => existsSync(b)) ?? null;
+  const explicit = BROWSER_CANDIDATES.find((b) => existsSync(b));
+  if (explicit) return explicit;
+
+  // Microsoft Playwright Docker images install browser binaries under
+  // /ms-playwright/chromium-*/chrome-linux/chrome instead of /usr/bin.
+  const pwRoot = "/ms-playwright";
+  if (existsSync(pwRoot)) {
+    const versions = readdirSync(pwRoot)
+      .filter((d) => d.startsWith("chromium-"))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    for (const version of versions.reverse()) {
+      const candidate = join(pwRoot, version, "chrome-linux", "chrome");
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
 }
 
 export interface StartOptions {
@@ -55,13 +79,18 @@ export function startBrowser(opts: StartOptions): {
 } {
   const port = opts.port ?? 9222;
   const url = opts.url ?? "about:blank";
-  const profileDir = opts.profileDir ?? join(homedir(), ".axe-mcp-browser");
+  const profileDir = opts.profileDir ?? process.env.AXE_PROFILE_DIR ?? join(homedir(), ".axe-mcp-browser");
   const browser = opts.browserPath ?? findBrowser();
-  if (!browser) throw new Error("No Chromium-family browser found in /Applications.");
+  if (!browser) {
+    throw new Error(
+      "No Chromium-family browser found. Set AXE_BROWSER_PATH, install Chromium, or use the Playwright Docker image."
+    );
+  }
   const extensionDir = opts.extensionDir ?? findAxeExtensionDir();
   if (!extensionDir) {
     throw new Error(
-      `Could not find the axe DevTools extension (${AXE_EXT_ID}) in BrowserOS/Chrome/Edge. Install it first, or pass extensionDir.`
+      `Could not find the axe DevTools extension (${AXE_EXT_ID}). ` +
+        `Install it in BrowserOS/Chrome/Edge, mount it into the container, or set AXE_EXTENSION_DIR.`
     );
   }
   // Clear a stale singleton lock so relaunching the same profile works.
@@ -75,7 +104,9 @@ export function startBrowser(opts: StartOptions): {
   const args = [
     `--user-data-dir=${profileDir}`,
     `--load-extension=${extensionDir}`,
+    "--disable-features=DisableLoadExtensionCommandLineSwitch",
     `--remote-debugging-port=${port}`,
+    "--remote-debugging-address=0.0.0.0",
     "--remote-allow-origins=*",
     "--auto-open-devtools-for-tabs",
     "--no-first-run",

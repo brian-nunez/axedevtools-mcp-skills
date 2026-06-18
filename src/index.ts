@@ -2,16 +2,68 @@
 // axe-mcp — drive Deque's REAL axe DevTools extension panel via the DevTools UI.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { randomUUID } from "node:crypto";
+import { createServer as createHttpServer } from "node:http";
 import { z } from "zod";
 import { panelScan } from "./panel.js";
 import { startBrowser, waitForCdp, findAxeExtensionDir } from "./browser.js";
 import { captureElement, capturePage, mediaAudit, inventory } from "./visual.js";
 import { runScript, scriptsAvailable, SCRIPTS_DIR } from "./igt.js";
+import { structureAudit } from "./structure.js";
+import { setupEnvironment } from "./setup.js";
+import { configureAxeExtension } from "./extension.js";
 
 const DEFAULT_ENDPOINT = process.env.AXE_CDP_ENDPOINT || "http://127.0.0.1:9222";
 let lastPid: number | null = null;
 
 const server = new McpServer({ name: "axe-mcp", version: "0.2.0" });
+
+server.registerTool(
+  "setup_environment",
+  {
+    title: "Set up the containerized axe IGT environment",
+    description:
+      "Single first call for agents: launch Chromium with the axe DevTools extension, expose CDP, open the target URL, " +
+      "and return noVNC/CDP details plus the seven IGT categories to complete. In Docker, Xvfb/noVNC are started by the container entrypoint.",
+    inputSchema: {
+      targetUrl: z.string().describe("The page URL to audit with all seven axe Intelligent Guided Tests."),
+      port: z.number().int().optional().describe("Remote debugging port. Defaults to AXE_CDP_PORT or 9222."),
+      profileDir: z.string().optional().describe("Browser profile directory. Defaults to AXE_PROFILE_DIR or ~/.axe-mcp-browser."),
+      browserPath: z.string().optional().describe("Chromium executable path. Defaults to AXE_BROWSER_PATH or auto-discovery."),
+      extensionDir: z.string().optional().describe("Unpacked axe DevTools extension path. Defaults to AXE_EXTENSION_DIR/AXE_EXT_DIR or auto-discovery."),
+      waitMs: z.number().int().optional().describe("Max milliseconds to wait for CDP. Default 30000."),
+    },
+  },
+  async (a) => {
+    const r = await setupEnvironment(a);
+    lastPid = r.pid;
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.registerTool(
+  "axe_extension_login",
+  {
+    title: "Configure/login to axe DevTools extension",
+    description:
+      "Shows the axe DevTools panel and attempts to log in using credentials from arguments or AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD. " +
+      "Server URL is normally configured at container startup through managed extension policy from AXE_SERVER_URL.",
+    inputSchema: {
+      cdpEndpoint: z.string().optional().describe(`CDP endpoint. Default ${DEFAULT_ENDPOINT}.`),
+      email: z.string().optional().describe("axe account email. Defaults to AXE_LOGIN_EMAIL."),
+      password: z.string().optional().describe("axe account password. Defaults to AXE_LOGIN_PASSWORD."),
+    },
+  },
+  async (a) => {
+    const r = await configureAxeExtension({
+      endpoint: a.cdpEndpoint || DEFAULT_ENDPOINT,
+      email: a.email || process.env.AXE_LOGIN_EMAIL,
+      password: a.password || process.env.AXE_LOGIN_PASSWORD,
+    });
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
 
 server.registerTool(
   "axe_browser_start",
@@ -151,6 +203,21 @@ server.registerTool(
   },
   async (a) => {
     const r = await mediaAudit(a.cdpEndpoint || DEFAULT_ENDPOINT, a.urlContains);
+    return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+  }
+);
+
+server.registerTool(
+  "axe_structure_audit",
+  {
+    title: "Audit page structure",
+    description:
+      "Run a deterministic Structure-category audit against the inspected page: headings, heading order, document language, " +
+      "title, common landmarks, and lists. This is the first Claude-powered guided category helper and does not require axe Pro.",
+    inputSchema: { urlContains: z.string().optional(), cdpEndpoint: z.string().optional() },
+  },
+  async (a) => {
+    const r = await structureAudit(a.cdpEndpoint || DEFAULT_ENDPOINT, a.urlContains);
     return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
   }
 );
@@ -382,9 +449,71 @@ server.registerTool(
     )
 );
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
-console.error(
-  `[axe-mcp] ready (stdio). axe extension: ${findAxeExtensionDir() ? "found" : "NOT FOUND"}. Default CDP: ${DEFAULT_ENDPOINT}. ` +
-    `IGT scripts: ${scriptsAvailable() ? SCRIPTS_DIR : "NOT FOUND (set AXE_IGT_SCRIPTS_DIR)"}`
-);
+async function readJsonBody(req: import("node:http").IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  if (!chunks.length) return undefined;
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function startStreamableHttp() {
+  const port = Number(process.env.MCP_PORT || 3000);
+  const host = process.env.MCP_HOST || "0.0.0.0";
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => randomUUID(),
+  });
+  await server.connect(transport);
+
+  const http = createHttpServer(async (req, res) => {
+    try {
+      const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+      if (url.pathname === "/healthz") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, transport: "streamable-http" }));
+        return;
+      }
+      if (url.pathname !== "/mcp") {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("not found");
+        return;
+      }
+      if (req.method === "POST") {
+        const body = await readJsonBody(req);
+        await transport.handleRequest(req, res, body);
+        return;
+      }
+      if (req.method === "GET" || req.method === "DELETE") {
+        await transport.handleRequest(req, res);
+        return;
+      }
+      res.writeHead(405, { "content-type": "text/plain" });
+      res.end("method not allowed");
+    } catch (error: any) {
+      console.error("[axe-mcp] HTTP transport error:", error?.stack || error?.message || error);
+      if (!res.headersSent) {
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "internal server error" }));
+      }
+    }
+  });
+
+  http.listen(port, host, () => {
+    console.error(
+      `[axe-mcp] ready (streamable-http). MCP: http://${host}:${port}/mcp. ` +
+        `axe extension: ${findAxeExtensionDir() ? "found" : "NOT FOUND"}. Default CDP: ${DEFAULT_ENDPOINT}. ` +
+        `IGT scripts: ${scriptsAvailable() ? SCRIPTS_DIR : "NOT FOUND (set AXE_IGT_SCRIPTS_DIR)"}`
+    );
+  });
+}
+
+async function startStdio() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error(
+    `[axe-mcp] ready (stdio). axe extension: ${findAxeExtensionDir() ? "found" : "NOT FOUND"}. Default CDP: ${DEFAULT_ENDPOINT}. ` +
+      `IGT scripts: ${scriptsAvailable() ? SCRIPTS_DIR : "NOT FOUND (set AXE_IGT_SCRIPTS_DIR)"}`
+  );
+}
+
+if (process.env.MCP_TRANSPORT === "stdio") await startStdio();
+else await startStreamableHttp();
