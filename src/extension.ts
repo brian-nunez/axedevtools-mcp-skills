@@ -328,15 +328,20 @@ export async function signInToAxe(opts: SignInOptions) {
     // what actually gives the page OS-level focus in a headless/VNC environment
     const loginSession = await cdp.attach(loginPage.targetId);
     await cdp.send("Page.bringToFront", {}, loginSession);
-    await sleep(2000);
+    await sleep(3000);
 
-    // Helper: bring page to front + JS focus + repeated mouse clicks before typing
+    // Helper: bring page to front + wait for page ready + JS focus + repeated mouse clicks before typing
     const focusField = async (selector: string) => {
       await cdp.send("Page.bringToFront", {}, loginSession);
       await sleep(300);
       const rect = await cdp
         .evalIn(loginSession, `(async()=>{
           const wait=ms=>new Promise(r=>setTimeout(r,ms));
+          // Wait for page to finish loading first
+          const readyDeadline=Date.now()+10000;
+          while(document.readyState!=='complete' && Date.now()<readyDeadline){
+            await wait(200);
+          }
           const deadline=Date.now()+15000;
           while(Date.now()<deadline){
             const el=document.querySelector(${JSON.stringify(selector)});
