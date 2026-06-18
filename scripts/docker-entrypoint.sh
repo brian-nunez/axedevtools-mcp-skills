@@ -88,6 +88,15 @@ session.screen0.slit.autoHide: true
 session.screen0.focusModel: ClickFocus
 session.screen0.windowPlacement: RowSmartPlacement
 EOF
+# Suppress fbsetbg popup: provide a no-op startup so Fluxbox does not fall
+# through to the system default which calls fbsetbg and shows an xmessage popup.
+cat > "$HOME/.fluxbox/startup" <<'EOF'
+#!/usr/bin/env bash
+# axe-mcp: minimal fluxbox startup - no wallpaper setter needed
+exec fluxbox
+EOF
+chmod +x "$HOME/.fluxbox/startup"
+
 cat > "$HOME/.fluxbox/apps" <<'EOF'
 [app] (name=chrome)
   [Maximized] {yes}

@@ -488,6 +488,11 @@ async function startStreamableHttp() {
         res.end(JSON.stringify({ ok: true, transport: "streamable-http" }));
         return;
       }
+      if (url.pathname === "/livez") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, uptime: process.uptime() }));
+        return;
+      }
       if (url.pathname !== "/mcp") {
         res.writeHead(404, { "content-type": "text/plain" });
         res.end("not found");

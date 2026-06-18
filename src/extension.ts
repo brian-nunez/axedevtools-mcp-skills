@@ -324,34 +324,54 @@ export async function signInToAxe(opts: SignInOptions) {
     }
     if (!loginPage) return { ok: false, reason: "login page did not open", clickResult };
 
-    // Activate the login tab so it has OS focus — required for Input events
-    await cdp.send("Target.activateTarget", { targetId: loginPage.targetId });
+    // Attach first, then use Page.bringToFront through the session — this is
+    // what actually gives the page OS-level focus in a headless/VNC environment
+    const loginSession = await cdp.attach(loginPage.targetId);
+    await cdp.send("Page.bringToFront", {}, loginSession);
     await sleep(2000);
 
-    const loginSession = await cdp.attach(loginPage.targetId);
+    // Helper: bring page to front + JS focus + repeated mouse clicks before typing
+    const focusField = async (selector: string) => {
+      await cdp.send("Page.bringToFront", {}, loginSession);
+      await sleep(300);
+      const rect = await cdp
+        .evalIn(loginSession, `(async()=>{
+          const wait=ms=>new Promise(r=>setTimeout(r,ms));
+          const deadline=Date.now()+15000;
+          while(Date.now()<deadline){
+            const el=document.querySelector(${JSON.stringify(selector)});
+            if(el && el.getBoundingClientRect().width>0){
+              el.focus();
+              const r=el.getBoundingClientRect();
+              return {x:r.left+r.width/2,y:r.top+r.height/2};
+            }
+            await wait(300);
+          }
+          return null;
+        })()`)
+        .catch(() => null);
+      if (!rect) return null;
+      for (let i = 0; i < 3; i++) {
+        await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", x: rect.x, y: rect.y, clickCount: 1 }, loginSession);
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", x: rect.x, y: rect.y, clickCount: 1 }, loginSession);
+        await sleep(150);
+      }
+      // JS focus again after the clicks to make sure it took
+      await cdp.evalIn(loginSession, `(()=>{
+        const el=document.querySelector(${JSON.stringify(selector)});
+        if(el){el.focus();el.click();}
+      })()`).catch(() => {});
+      await sleep(300);
+      return rect;
+    };
 
-    // Wait for #username, get its coordinates, then CDP-click it to ensure real focus
-    const usernameRect = await cdp
-      .evalIn(loginSession, `(async()=>{
-        const wait=ms=>new Promise(r=>setTimeout(r,ms));
-        const deadline=Date.now()+15000;
-        while(Date.now()<deadline){
-          const el=document.querySelector('#username');
-          if(el){const r=el.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};}
-          await wait(300);
-        }
-        return null;
-      })()`)
-      .catch(() => null);
+    // Focus #username and type email
+    const usernameRect = await focusField("#username");
     if (!usernameRect) {
       await cdp.detach(loginSession);
       return { ok: false, reason: "#username not found", clickResult };
     }
-    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", x: usernameRect.x, y: usernameRect.y, clickCount: 1 }, loginSession);
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", x: usernameRect.x, y: usernameRect.y, clickCount: 1 }, loginSession);
-    await sleep(200);
-
-    // Type email via CDP Input.dispatchKeyEvent — no JS value manipulation
+    await sleep(2000);
     for (const ch of opts.email) {
       await cdp.send("Input.dispatchKeyEvent", { type: "char", text: ch, unmodifiedText: ch }, loginSession);
       await sleep(50);
@@ -375,28 +395,13 @@ export async function signInToAxe(opts: SignInOptions) {
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", x: nextRect.x, y: nextRect.y, clickCount: 1 }, loginSession);
     await sleep(1000);
 
-    // Wait for #password, get its coordinates, then CDP-click it
-    const passwordRect = await cdp
-      .evalIn(loginSession, `(async()=>{
-        const wait=ms=>new Promise(r=>setTimeout(r,ms));
-        const deadline=Date.now()+10000;
-        while(Date.now()<deadline){
-          const el=document.querySelector('#password');
-          if(el){const r=el.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};}
-          await wait(300);
-        }
-        return null;
-      })()`)
-      .catch(() => null);
+    // Focus #password and type password
+    const passwordRect = await focusField("#password");
     if (!passwordRect) {
       await cdp.detach(loginSession);
       return { ok: false, reason: "#password not found", clickResult };
     }
-    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", x: passwordRect.x, y: passwordRect.y, clickCount: 1 }, loginSession);
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", x: passwordRect.x, y: passwordRect.y, clickCount: 1 }, loginSession);
-    await sleep(200);
-
-    // Type password via CDP Input.dispatchKeyEvent — no JS value manipulation
+    await sleep(2000);
     for (const ch of opts.password) {
       await cdp.send("Input.dispatchKeyEvent", { type: "char", text: ch, unmodifiedText: ch }, loginSession);
       await sleep(50);
@@ -432,8 +437,6 @@ function signInClickExpr(clickEmailLink: boolean) {
     const click=el=>{try{el.click();}catch(_){}};
     const itext=e=>((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();
 
-    if(window.__axeSignInClicked) return JSON.stringify({ok:true, clicked:'deduped'});
-
     const btnDeadline=Date.now()+10000;
     let signInBtn=null;
     while(Date.now()<btnDeadline){
@@ -443,7 +446,6 @@ function signInClickExpr(clickEmailLink: boolean) {
       await wait(400);
     }
     if(!signInBtn) return JSON.stringify({ok:false, reason:'Sign in button not found after 10s', buttons:deep('button,[role=button]',document,[]).map(itext).filter(Boolean).slice(0,20)});
-    window.__axeSignInClicked=true;
     click(signInBtn);
     await wait(500);
 
