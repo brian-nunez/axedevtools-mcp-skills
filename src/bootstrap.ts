@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { desktopBounds, startBrowser, waitForCdp } from "./browser.js";
-import { completeAxeOnboarding, configureAxeSettings, dismissAxeAiPopup, showAxeDevToolsPanel, signInToAxe } from "./extension.js";
+import { clickScanFullPage, completeAxeOnboarding, configureAxeSettings, dismissAxeAiPopup, showAxeDevToolsPanel, signInToAxe } from "./extension.js";
 import { waitForAndCloseInstallSuccess } from "./setup.js";
 import { CDP } from "./cdp.js";
 import { writeFile } from "node:fs/promises";
@@ -131,6 +131,8 @@ async function main() {
   const aiPopup = await dismissAxeAiPopup(info.endpoint, Number(process.env.AXE_AI_POPUP_WAIT_MS || 15_000));
   console.error(`[axe-mcp] axe AI popup dismiss: ${JSON.stringify(aiPopup)}`);
 
+  let signIn: any = null;
+  let scanFullPage: any = null;
   if (process.env.AXE_LOGIN_EMAIL && process.env.AXE_LOGIN_PASSWORD) {
     const result = await signInToAxe({
       endpoint: info.endpoint,
@@ -138,14 +140,23 @@ async function main() {
       password: process.env.AXE_LOGIN_PASSWORD,
       onPrem: process.env.ON_PREM !== "0",
     });
+    signIn = result;
     console.error(`[axe-mcp] axe sign-in: ${JSON.stringify({
       ok: result.ok,
       onPrem: result.onPrem,
       clicked: result.clickResult?.clicked,
       reason: result.reason,
     })}`);
+    if (result.ok) {
+      scanFullPage = await clickScanFullPage(info.endpoint, envNumber("AXE_SCAN_FULL_PAGE_WAIT_MS", 30_000));
+      console.error(`[axe-mcp] axe Scan full page click: ${JSON.stringify(scanFullPage)}`);
+    } else {
+      scanFullPage = { ok: false, skipped: true, reason: "sign-in did not complete" };
+      console.error(`[axe-mcp] axe Scan full page click skipped: ${JSON.stringify(scanFullPage)}`);
+    }
   } else {
     console.error("[axe-mcp] AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set; skipping sign-in");
+    scanFullPage = { ok: false, skipped: true, reason: "AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set" };
   }
 
   // if (process.env.AXE_SERVER_URL) {
@@ -177,6 +188,8 @@ async function main() {
         onboarding,
         aiPopup,
         axePanel,
+        signIn,
+        scanFullPage,
         prepared,
         readyAt: new Date().toISOString(),
       },

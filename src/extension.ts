@@ -80,6 +80,42 @@ export async function dismissAxeAiPopup(endpoint: string, timeoutMs = 15_000) {
   }
 }
 
+export async function clickScanFullPage(endpoint: string, timeoutMs = 30_000) {
+  const cdp = await CDP.connect(endpoint);
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      await showAxePanel(cdp, Date.now() + 2_500, 250).catch(() => false);
+      const panel = await panelTarget(cdp, Date.now() + 2_500, 250);
+      if (!panel) {
+        await sleep(500);
+        continue;
+      }
+
+      let session: string | null = null;
+      try {
+        session = await cdp.attach(panel.targetId);
+        const result = await cdp
+          .evalIn(session, scanFullPageExpr())
+          .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+          .catch((e) => ({ ok: false, reason: e.message }));
+        await cdp.detach(session);
+        session = null;
+        if (result?.ok || result?.attempted) {
+          return { ...result, targetUrl: panel.url };
+        }
+      } catch {
+        if (session) await cdp.detach(session).catch(() => { });
+      }
+
+      await sleep(500);
+    }
+    return { ok: false, attempted: false, reason: "Scan full page button not found before timeout" };
+  } finally {
+    cdp.close();
+  }
+}
+
 function extensionTargets(targets: TargetInfo[]) {
   return targets
     .filter(
@@ -214,6 +250,43 @@ function dismissAiPopupExpr() {
       headingId:heading.id,
       headingText:text(heading)
     });
+  })()`;
+}
+
+function scanFullPageExpr() {
+  return `(async()=> {
+    ${DEEP}
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
+    const norm=s=>(s||'').replace(/\\s+/g,' ').trim();
+    const text=e=>norm((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'');
+    const visible=e=>{
+      const r=e.getBoundingClientRect();
+      const s=getComputedStyle(e);
+      return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden';
+    };
+    const deadline=Date.now()+2500;
+    let button=null;
+    while(Date.now()<deadline){
+      button=deep('button[type="button"]',document,[]).find(b=>visible(b) && /^Scan full page$/i.test(text(b)) && !b.disabled);
+      if(button) break;
+      await wait(150);
+    }
+    if(!button) {
+      return JSON.stringify({
+        ok:false,
+        attempted:false,
+        reason:'Scan full page button not found',
+        buttons:deep('button',document,[]).map(b=>({type:b.type||'', text:text(b), disabled:!!b.disabled})).filter(b=>b.text).slice(0,30)
+      });
+    }
+    button.scrollIntoView({block:'center', inline:'center'});
+    await wait(100);
+    try{button.focus();}catch(_){}
+    button.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
+    button.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
+    button.click();
+    await wait(1000);
+    return JSON.stringify({ok:true, attempted:true, clicked:text(button)});
   })()`;
 }
 
