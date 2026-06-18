@@ -9,6 +9,9 @@ const targetUrl = process.env.TARGET_URL || process.env.AXE_TARGET_URL;
 const port = Number(process.env.AXE_CDP_PORT || 9222);
 const endpoint = process.env.AXE_CDP_ENDPOINT || `http://127.0.0.1:${port}`;
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const envNumber = (name: string, fallback: number) => Number(process.env[name] || fallback);
+
 async function verifyPreparedBrowser(endpoint: string, targetUrl: string) {
   const cdp = await CDP.connect(endpoint);
   try {
@@ -29,6 +32,24 @@ async function verifyPreparedBrowser(endpoint: string, targetUrl: string) {
   }
 }
 
+async function completeAxeOnboardingWithRetries(
+  endpoint: string,
+  label: string,
+  attempts: number,
+  timeoutMs: number,
+  delayMs: number
+) {
+  let lastResult: any = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const result = await completeAxeOnboarding(endpoint, timeoutMs);
+    lastResult = { ...result, attempt, attempts, timeoutMs };
+    console.error(`[axe-mcp] axe onboarding ${label} attempt ${attempt}/${attempts}: ${JSON.stringify(result)}`);
+    if (result.completed || result.attempted) return lastResult;
+    if (attempt < attempts) await sleep(delayMs);
+  }
+  return lastResult ?? { attempted: false, completed: false, attempt: 0, attempts, timeoutMs };
+}
+
 async function main() {
   if (!targetUrl) {
     throw new Error("TARGET_URL or AXE_TARGET_URL is required for startup preparation.");
@@ -42,8 +63,13 @@ async function main() {
   const installSuccess = await waitForAndCloseInstallSuccess(info.endpoint, Number(process.env.AXE_INSTALL_SUCCESS_WAIT_MS || 20_000));
   console.error(`[axe-mcp] axe install-success tab: ${JSON.stringify(installSuccess)}`);
 
-  let onboarding = await completeAxeOnboarding(info.endpoint, Number(process.env.AXE_ONBOARDING_WAIT_MS || 20_000));
-  console.error(`[axe-mcp] axe onboarding before panel: ${JSON.stringify(onboarding)}`);
+  let onboarding = await completeAxeOnboardingWithRetries(
+    info.endpoint,
+    "before panel",
+    envNumber("AXE_ONBOARDING_ATTEMPTS", 3),
+    envNumber("AXE_ONBOARDING_ATTEMPT_MS", 2_000),
+    envNumber("AXE_ONBOARDING_RETRY_DELAY_MS", 300)
+  );
 
   const axePanel = await showAxeDevToolsPanel(info.endpoint);
   console.error(`[axe-mcp] axe DevTools panel: ${JSON.stringify(axePanel)}`);
@@ -52,8 +78,13 @@ async function main() {
   }
 
   if (!onboarding.completed) {
-    onboarding = await completeAxeOnboarding(info.endpoint, Number(process.env.AXE_ONBOARDING_PANEL_WAIT_MS || 15_000));
-    console.error(`[axe-mcp] axe onboarding after panel: ${JSON.stringify(onboarding)}`);
+    onboarding = await completeAxeOnboardingWithRetries(
+      info.endpoint,
+      "after panel",
+      envNumber("AXE_ONBOARDING_PANEL_ATTEMPTS", 3),
+      envNumber("AXE_ONBOARDING_PANEL_ATTEMPT_MS", 3_000),
+      envNumber("AXE_ONBOARDING_PANEL_RETRY_DELAY_MS", 300)
+    );
   }
 
   const aiPopup = await dismissAxeAiPopup(info.endpoint, Number(process.env.AXE_AI_POPUP_WAIT_MS || 15_000));
