@@ -15,13 +15,39 @@ function noVncUrl(): string | null {
   return port ? `http://127.0.0.1:${port}/vnc.html` : null;
 }
 
+export async function waitForAndCloseInstallSuccess(endpoint: string, timeoutMs = 20_000) {
+  const cdp = await CDP.connect(endpoint);
+  const deadline = Date.now() + timeoutMs;
+  const installRe = /axe\.deque\.com\/install-success|deque\.com\/install-success/i;
+  let seen = false;
+  let closed = 0;
+  try {
+    while (Date.now() < deadline) {
+      const targets = await cdp.targets();
+      const matches = targets.filter((t) => t.type === "page" && installRe.test(t.url));
+      if (matches.length) {
+        seen = true;
+        for (const target of matches) {
+          const ok = await cdp.send("Target.closeTarget", { targetId: target.targetId }).catch(() => null);
+          if (ok) closed++;
+        }
+        break;
+      }
+      await sleep(500);
+    }
+    return { seen, closed };
+  } finally {
+    cdp.close();
+  }
+}
+
 async function prepareBrowser(endpoint: string, targetUrl: string) {
   const cdp = await CDP.connect(endpoint);
   try {
     // The extension often opens install-success/onboarding tabs. Close them so
     // DevTools/axe panel lookup binds to the inspected page only.
     for (const t of await cdp.targets()) {
-      if (t.type === "page" && /deque\.com|install-success/.test(t.url)) {
+      if (t.type === "page" && /axe\.deque\.com\/install-success|deque\.com\/install-success/i.test(t.url)) {
         await cdp.send("Target.closeTarget", { targetId: t.targetId }).catch(() => {});
       }
     }
@@ -65,12 +91,14 @@ export async function setupEnvironment(opts: SetupEnvironmentOptions) {
     extensionDir: opts.extensionDir,
   });
   const cdpReady = await waitForCdp(info.endpoint, opts.waitMs ?? 30_000);
+  const installSuccess = cdpReady ? await waitForAndCloseInstallSuccess(info.endpoint) : { seen: false, closed: 0 };
   const prepared = cdpReady ? await prepareBrowser(info.endpoint, opts.targetUrl) : { pageReady: false, pageUrl: null };
   return {
     ok: cdpReady && prepared.pageReady,
     targetUrl: opts.targetUrl,
     pageUrl: prepared.pageUrl,
     cdpReady,
+    installSuccess,
     cdpEndpoint: info.endpoint,
     noVncUrl: noVncUrl(),
     pid: info.pid,
