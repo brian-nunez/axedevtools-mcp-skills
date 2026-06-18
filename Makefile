@@ -11,6 +11,7 @@ TARGET_URL ?= https://example.com
 AXE_SERVER_URL ?=
 AXE_LOGIN_EMAIL ?=
 AXE_LOGIN_PASSWORD ?=
+ON_PREM ?= 0
 
 .PHONY: build start wait-ready stop restart logs ps shell
 
@@ -29,6 +30,7 @@ start:
 		-e AXE_SERVER_URL="$(AXE_SERVER_URL)" \
 		-e AXE_LOGIN_EMAIL="$(AXE_LOGIN_EMAIL)" \
 		-e AXE_LOGIN_PASSWORD="$(AXE_LOGIN_PASSWORD)" \
+		-e ON_PREM="$(ON_PREM)" \
 		-v $(PROFILE_VOLUME):/home/pwuser/.axe-mcp-browser \
 		$(IMAGE)
 	@echo "MCP:    http://127.0.0.1:$(MCP_PORT)/mcp"

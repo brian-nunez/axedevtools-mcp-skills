@@ -237,6 +237,14 @@ export interface ConfigureSettingsOptions {
   serverUrl: string;
 }
 
+export interface SignInOptions {
+  endpoint: string;
+  email: string;
+  password: string;
+  /** When false (ON_PREM=0), click "or sign in with email" after the Sign in button. Default: true */
+  onPrem?: boolean;
+}
+
 export async function configureAxeExtension(opts: ConfigureExtensionOptions) {
   const cdp = await CDP.connect(opts.endpoint);
   try {
@@ -284,6 +292,175 @@ function panelStateExpr() {
     });
   })()`;
 }
+
+export async function signInToAxe(opts: SignInOptions) {
+  const onPrem = opts.onPrem !== false; // default true; false only when ON_PREM=0
+  const cdp = await CDP.connect(opts.endpoint);
+  try {
+    const panel = await panelTarget(cdp);
+    if (!panel) return { ok: false, reason: "axe panel target not found" };
+
+    // Snapshot existing page targets so we can detect the new one that opens
+    const existingIds = new Set((await cdp.targets()).map((t) => t.targetId));
+
+    // Click Sign in (and optionally the email link) inside the panel
+    const session = await cdp.attach(panel.targetId);
+    const clickResult = await cdp
+      .evalIn(session, signInClickExpr(!onPrem))
+      .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+      .catch((e) => ({ ok: false, error: e.message }));
+    await cdp.detach(session);
+
+    if (!clickResult?.ok) return { ok: false, reason: "sign-in click failed", clickResult };
+
+    // Wait for the new login page to open (new page target)
+    const deadline = Date.now() + 15_000;
+    let loginPage: TargetInfo | null = null;
+    while (Date.now() < deadline) {
+      const targets = await cdp.targets();
+      loginPage = targets.find((t) => t.type === "page" && !existingIds.has(t.targetId)) ?? null;
+      if (loginPage) break;
+      await sleep(300);
+    }
+    if (!loginPage) return { ok: false, reason: "login page did not open", clickResult };
+
+    // Activate the login tab so it has OS focus — required for Input events
+    await cdp.send("Target.activateTarget", { targetId: loginPage.targetId });
+    await sleep(2000);
+
+    const loginSession = await cdp.attach(loginPage.targetId);
+
+    // Wait for #username, get its coordinates, then CDP-click it to ensure real focus
+    const usernameRect = await cdp
+      .evalIn(loginSession, `(async()=>{
+        const wait=ms=>new Promise(r=>setTimeout(r,ms));
+        const deadline=Date.now()+15000;
+        while(Date.now()<deadline){
+          const el=document.querySelector('#username');
+          if(el){const r=el.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};}
+          await wait(300);
+        }
+        return null;
+      })()`)
+      .catch(() => null);
+    if (!usernameRect) {
+      await cdp.detach(loginSession);
+      return { ok: false, reason: "#username not found", clickResult };
+    }
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", x: usernameRect.x, y: usernameRect.y, clickCount: 1 }, loginSession);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", x: usernameRect.x, y: usernameRect.y, clickCount: 1 }, loginSession);
+    await sleep(200);
+
+    // Type email via CDP Input.dispatchKeyEvent — no JS value manipulation
+    for (const ch of opts.email) {
+      await cdp.send("Input.dispatchKeyEvent", { type: "char", text: ch, unmodifiedText: ch }, loginSession);
+      await sleep(50);
+    }
+    await sleep(1000);
+
+    // Click Next via CDP mouse event
+    const nextRect = await cdp
+      .evalIn(loginSession, `(()=>{
+        const text=e=>((e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();
+        const btn=[...document.querySelectorAll('button[type="submit"]')].find(b=>/Next/i.test(text(b)));
+        if(!btn) return null;
+        const r=btn.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};
+      })()`)
+      .catch(() => null);
+    if (!nextRect) {
+      await cdp.detach(loginSession);
+      return { ok: false, reason: "Next button not found", clickResult };
+    }
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", x: nextRect.x, y: nextRect.y, clickCount: 1 }, loginSession);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", x: nextRect.x, y: nextRect.y, clickCount: 1 }, loginSession);
+    await sleep(1000);
+
+    // Wait for #password, get its coordinates, then CDP-click it
+    const passwordRect = await cdp
+      .evalIn(loginSession, `(async()=>{
+        const wait=ms=>new Promise(r=>setTimeout(r,ms));
+        const deadline=Date.now()+10000;
+        while(Date.now()<deadline){
+          const el=document.querySelector('#password');
+          if(el){const r=el.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};}
+          await wait(300);
+        }
+        return null;
+      })()`)
+      .catch(() => null);
+    if (!passwordRect) {
+      await cdp.detach(loginSession);
+      return { ok: false, reason: "#password not found", clickResult };
+    }
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", x: passwordRect.x, y: passwordRect.y, clickCount: 1 }, loginSession);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", x: passwordRect.x, y: passwordRect.y, clickCount: 1 }, loginSession);
+    await sleep(200);
+
+    // Type password via CDP Input.dispatchKeyEvent — no JS value manipulation
+    for (const ch of opts.password) {
+      await cdp.send("Input.dispatchKeyEvent", { type: "char", text: ch, unmodifiedText: ch }, loginSession);
+      await sleep(50);
+    }
+    await sleep(1000);
+
+    // Click Submit via CDP mouse event
+    const submitRect = await cdp
+      .evalIn(loginSession, `(()=>{
+        const text=e=>((e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();
+        const btn=[...document.querySelectorAll('button[type="submit"]')].find(b=>/Submit/i.test(text(b)));
+        if(!btn) return null;
+        const r=btn.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};
+      })()`)
+      .catch(() => null);
+    const submitClicked = !!submitRect;
+    if (submitRect) {
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", x: submitRect.x, y: submitRect.y, clickCount: 1 }, loginSession);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", x: submitRect.x, y: submitRect.y, clickCount: 1 }, loginSession);
+    }
+
+    await cdp.detach(loginSession);
+    return { ok: !!submitClicked, onPrem, clickResult, submitClicked };
+  } finally {
+    cdp.close();
+  }
+}
+
+function signInClickExpr(clickEmailLink: boolean) {
+  return `(async()=>{
+    ${DEEP}
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
+    const click=el=>{try{el.click();}catch(_){}};
+    const itext=e=>((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();
+
+    const btnDeadline=Date.now()+10000;
+    let signInBtn=null;
+    while(Date.now()<btnDeadline){
+      signInBtn=deep('ul > li > button',document,[]).find(b=>/Sign in/i.test(itext(b)));
+      if(!signInBtn) signInBtn=deep('button,[role=button]',document,[]).find(b=>/Sign in/i.test(itext(b)));
+      if(signInBtn) break;
+      await wait(400);
+    }
+    if(!signInBtn) return JSON.stringify({ok:false, reason:'Sign in button not found after 10s', buttons:deep('button,[role=button]',document,[]).map(itext).filter(Boolean).slice(0,20)});
+    click(signInBtn);
+    await wait(500);
+
+    ${clickEmailLink ? `
+    const emailDeadline=Date.now()+8000;
+    let emailLink=null;
+    while(Date.now()<emailDeadline){
+      emailLink=deep('a',document,[]).find(a=>/or sign in with email/i.test(itext(a)));
+      if(emailLink) break;
+      await wait(300);
+    }
+    if(!emailLink) return JSON.stringify({ok:false, reason:'"or sign in with email" link not found', anchors:deep('a',document,[]).map(itext).filter(Boolean).slice(0,20)});
+    click(emailLink);
+    return JSON.stringify({ok:true, clicked:'sign-in-button+email-link'});
+    ` : `
+    return JSON.stringify({ok:true, clicked:'sign-in-button'});
+    `}
+  })()`;
+}
+
 
 export async function configureAxeSettings(opts: ConfigureSettingsOptions) {
   const cdp = await CDP.connect(opts.endpoint);

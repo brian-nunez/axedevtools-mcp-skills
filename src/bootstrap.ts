@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { desktopBounds, startBrowser, waitForCdp } from "./browser.js";
-import { completeAxeOnboarding, configureAxeExtension, configureAxeSettings, dismissAxeAiPopup, showAxeDevToolsPanel } from "./extension.js";
+import { completeAxeOnboarding, configureAxeSettings, dismissAxeAiPopup, showAxeDevToolsPanel, signInToAxe } from "./extension.js";
 import { waitForAndCloseInstallSuccess } from "./setup.js";
 import { CDP } from "./cdp.js";
 import { writeFile } from "node:fs/promises";
@@ -132,19 +132,20 @@ async function main() {
   console.error(`[axe-mcp] axe AI popup dismiss: ${JSON.stringify(aiPopup)}`);
 
   if (process.env.AXE_LOGIN_EMAIL && process.env.AXE_LOGIN_PASSWORD) {
-    const result = await configureAxeExtension({
-      endpoint,
+    const result = await signInToAxe({
+      endpoint: info.endpoint,
       email: process.env.AXE_LOGIN_EMAIL,
       password: process.env.AXE_LOGIN_PASSWORD,
+      onPrem: process.env.ON_PREM !== "0",
     });
-    console.error(`[axe-mcp] axe extension login bootstrap: ${JSON.stringify({
-      panelShown: result.panelShown,
-      loginAttempted: result.loginAttempted,
-      loggedIn: result.loggedIn,
+    console.error(`[axe-mcp] axe sign-in: ${JSON.stringify({
+      ok: result.ok,
+      onPrem: result.onPrem,
+      clicked: result.clickResult?.clicked,
       reason: result.reason,
     })}`);
   } else {
-    console.error("[axe-mcp] AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set; skipping extension login bootstrap");
+    console.error("[axe-mcp] AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set; skipping sign-in");
   }
 
   // if (process.env.AXE_SERVER_URL) {
