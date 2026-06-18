@@ -83,6 +83,7 @@ export async function dismissAxeAiPopup(endpoint: string, timeoutMs = 15_000) {
 export async function clickScanFullPage(endpoint: string, timeoutMs = 30_000) {
   const cdp = await CDP.connect(endpoint);
   const deadline = Date.now() + timeoutMs;
+  let lastResult: any = null;
   try {
     while (Date.now() < deadline) {
       await showAxePanel(cdp, Date.now() + 2_500, 250).catch(() => false);
@@ -96,12 +97,41 @@ export async function clickScanFullPage(endpoint: string, timeoutMs = 30_000) {
       try {
         session = await cdp.attach(panel.targetId);
         const result = await cdp
-          .evalIn(session, scanFullPageExpr())
+          .evalIn(session, scanFullPageProbeExpr())
           .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
           .catch((e) => ({ ok: false, reason: e.message }));
+        lastResult = result;
+        if (result?.ready && result?.point) {
+          await cdp.send(
+            "Input.dispatchMouseEvent",
+            { type: "mouseMoved", x: result.point.x, y: result.point.y },
+            session
+          ).catch(() => {});
+          await cdp.send(
+            "Input.dispatchMouseEvent",
+            { type: "mousePressed", button: "left", x: result.point.x, y: result.point.y, clickCount: 1 },
+            session
+          );
+          await cdp.send(
+            "Input.dispatchMouseEvent",
+            { type: "mouseReleased", button: "left", x: result.point.x, y: result.point.y, clickCount: 1 },
+            session
+          );
+          await sleep(500);
+          const verified = await cdp
+            .evalIn(session, scanFullPageVerifyExpr())
+            .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+            .catch((e) => ({ ok: false, reason: e.message }));
+          lastResult = { probe: result, verified };
+          if (verified?.ok) {
+            await cdp.detach(session);
+            session = null;
+            return { ...verified, targetUrl: panel.url };
+          }
+        }
         await cdp.detach(session);
         session = null;
-        if (result?.ok || result?.attempted) {
+        if (result?.attempted && result?.terminal) {
           return { ...result, targetUrl: panel.url };
         }
       } catch {
@@ -110,7 +140,7 @@ export async function clickScanFullPage(endpoint: string, timeoutMs = 30_000) {
 
       await sleep(500);
     }
-    return { ok: false, attempted: false, reason: "Scan full page button not found before timeout" };
+    return { ok: false, attempted: !!lastResult?.attempted || !!lastResult?.probe?.attempted, reason: "Scan full page was not confirmed before timeout", lastResult };
   } finally {
     cdp.close();
   }
@@ -295,7 +325,7 @@ function dismissAiPopupExpr() {
   })()`;
 }
 
-function scanFullPageExpr() {
+function scanFullPageProbeExpr() {
   return `(async()=> {
     ${DEEP}
     const wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -306,11 +336,37 @@ function scanFullPageExpr() {
       const s=getComputedStyle(e);
       return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden';
     };
-    const deadline=Date.now()+5000;
+    const buttonState=b=>({
+      text:text(b),
+      disabled:!!b.disabled,
+      ariaDisabled:b.getAttribute('aria-disabled')||'',
+      ariaBusy:b.getAttribute('aria-busy')||'',
+      className:b.className||''
+    });
+    const findButton=()=>deep('button[type="button"]',document,[]).find(b=>
+      visible(b) &&
+      /^Scan full page$/i.test(text(b)) &&
+      !b.disabled &&
+      b.getAttribute('aria-disabled')!=='true' &&
+      b.getAttribute('aria-busy')!=='true'
+    );
+    const deadline=Date.now()+10000;
     let button=null;
+    let stableSince=0;
     while(Date.now()<deadline){
-      button=deep('button[type="button"]',document,[]).find(b=>visible(b) && /^Scan full page$/i.test(text(b)) && !b.disabled);
-      if(button) break;
+      const found=findButton();
+      if(found) {
+        if(found===button) {
+          if(!stableSince) stableSince=Date.now();
+          if(Date.now()-stableSince>=750) break;
+        } else {
+          button=found;
+          stableSince=Date.now();
+        }
+      } else {
+        button=null;
+        stableSince=0;
+      }
       await wait(150);
     }
     if(!button) {
@@ -322,13 +378,52 @@ function scanFullPageExpr() {
       });
     }
     button.scrollIntoView({block:'center', inline:'center'});
-    await wait(100);
+    await wait(250);
     try{button.focus();}catch(_){}
-    button.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
-    button.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
-    button.click();
-    await wait(1000);
-    return JSON.stringify({ok:true, attempted:true, clicked:text(button)});
+    const r=button.getBoundingClientRect();
+    return JSON.stringify({
+      ok:false,
+      attempted:true,
+      ready:true,
+      clicked:false,
+      button:buttonState(button),
+      point:{x:r.left+r.width/2,y:r.top+r.height/2}
+    });
+  })()`;
+}
+
+function scanFullPageVerifyExpr() {
+  return `(async()=> {
+    ${DEEP}
+    const wait=ms=>new Promise(r=>setTimeout(r,ms));
+    const norm=s=>(s||'').replace(/\\s+/g,' ').trim();
+    const text=e=>norm((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'');
+    const body=()=>norm(document.body ? document.body.innerText : '');
+    const button=()=>deep('button[type="button"]',document,[]).find(b=>/^Scan full page$/i.test(text(b)));
+    const deadline=Date.now()+6000;
+    while(Date.now()<deadline){
+      const b=button();
+      const pageText=body();
+      const buttonGone=!b;
+      const disabled=!!(b && (b.disabled || b.getAttribute('aria-disabled')==='true' || b.getAttribute('aria-busy')==='true'));
+      const scanning=/scanning|analyz|running|loading|please wait|in progress/i.test(pageText);
+      const results=/issues?|needs review|automatic|guided|violations?|scan results/i.test(pageText);
+      if(buttonGone || disabled || scanning || results) {
+        return JSON.stringify({
+          ok:true,
+          attempted:true,
+          clicked:'Scan full page',
+          signal:{buttonGone, disabled, scanning, results}
+        });
+      }
+      await wait(250);
+    }
+    return JSON.stringify({
+      ok:false,
+      attempted:true,
+      terminal:false,
+      reason:'Scan full page click did not produce a detectable state change'
+    });
   })()`;
 }
 
