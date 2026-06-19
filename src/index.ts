@@ -11,7 +11,7 @@ import { z } from "zod";
 import { panelScan } from "./panel.js";
 import { CDP } from "./cdp.js";
 import { startBrowser, waitForCdp, findAxeExtensionDir } from "./browser.js";
-import { captureElement, capturePage, mediaAudit, inventory } from "./visual.js";
+import { captureElement, capturePage, mediaAudit, inventory, pngDataUrl } from "./visual.js";
 import { runScript, scriptsAvailable, SCRIPTS_DIR } from "./igt.js";
 import { structureAudit } from "./structure.js";
 import { setupEnvironment } from "./setup.js";
@@ -368,7 +368,7 @@ server.registerTool(
     const r = await captureElement(a.cdpEndpoint || DEFAULT_ENDPOINT, a.selector, a.urlContains);
     return {
       content: [
-        { type: "image" as const, data: r.base64, mimeType: "image/png" },
+        { type: "image" as const, data: pngDataUrl(r.base64), mimeType: "image/png" },
         { type: "text" as const, text: JSON.stringify(r.meta, null, 2) },
       ],
     };
@@ -389,7 +389,7 @@ server.registerTool(
   },
   async (a) => {
     const r = await capturePage(a.cdpEndpoint || DEFAULT_ENDPOINT, a.fullPage ?? false, a.urlContains);
-    return { content: [{ type: "image" as const, data: r.base64, mimeType: "image/png" }] };
+    return { content: [{ type: "image" as const, data: pngDataUrl(r.base64), mimeType: "image/png" }] };
   }
 );
 

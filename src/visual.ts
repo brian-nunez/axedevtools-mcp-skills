@@ -39,6 +39,10 @@ export function normalizePngBase64(value: unknown): string {
   return bytes.toString("base64");
 }
 
+export function pngDataUrl(value: unknown): string {
+  return `data:image/png;base64,${normalizePngBase64(value)}`;
+}
+
 export async function captureElement(endpoint: string, selector: string, urlContains?: string): Promise<CaptureResult> {
   const cdp = await CDP.connect(endpoint);
   try {
