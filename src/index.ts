@@ -6,6 +6,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { panelScan } from "./panel.js";
 import { CDP } from "./cdp.js";
@@ -119,6 +120,7 @@ async function cleanupBrowserAndScheduleShutdown(args: {
   };
 }
 
+function createMcpServer() {
 const server = new McpServer({ name: "axe-mcp", version: "0.2.0" });
 
 server.registerTool(
@@ -662,6 +664,9 @@ server.registerTool(
     )
 );
 
+return server;
+}
+
 async function readJsonBody(req: import("node:http").IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -672,10 +677,7 @@ async function readJsonBody(req: import("node:http").IncomingMessage): Promise<u
 async function startStreamableHttp() {
   const port = Number(process.env.MCP_PORT || 3000);
   const host = process.env.MCP_HOST || "0.0.0.0";
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
-  });
-  await server.connect(transport);
+  const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
 
   const http = createHttpServer(async (req, res) => {
     try {
@@ -697,10 +699,67 @@ async function startStreamableHttp() {
       }
       if (req.method === "POST") {
         const body = await readJsonBody(req);
+        const header = req.headers["mcp-session-id"];
+        const sessionId = Array.isArray(header) ? header[0] : header;
+        let transport: StreamableHTTPServerTransport;
+
+        if (sessionId) {
+          const session = sessions.get(sessionId);
+          if (!session) {
+            res.writeHead(404, { "content-type": "application/json" });
+            res.end(JSON.stringify({
+              jsonrpc: "2.0",
+              error: { code: -32001, message: "Session not found" },
+              id: null,
+            }));
+            return;
+          }
+          transport = session.transport;
+        } else if (isInitializeRequest(body)) {
+          let sessionServer: McpServer;
+          transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (newSessionId) => {
+              sessions.set(newSessionId, { transport, server: sessionServer });
+              console.error(`[axe-mcp] HTTP session initialized: ${newSessionId}`);
+            },
+          });
+          sessionServer = createMcpServer();
+          transport.onclose = () => {
+            const closedSessionId = transport.sessionId;
+            if (closedSessionId) {
+              sessions.delete(closedSessionId);
+              console.error(`[axe-mcp] HTTP session closed: ${closedSessionId}`);
+            }
+          };
+          await sessionServer.connect(transport);
+        } else {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            error: { code: -32000, message: "Bad Request: No valid session ID provided" },
+            id: null,
+          }));
+          return;
+        }
+
         await transport.handleRequest(req, res, body);
         return;
       }
       if (req.method === "GET" || req.method === "DELETE") {
+        const header = req.headers["mcp-session-id"];
+        const sessionId = Array.isArray(header) ? header[0] : header;
+        const session = sessionId ? sessions.get(sessionId) : undefined;
+        if (!session) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            error: { code: -32001, message: "Session not found" },
+            id: null,
+          }));
+          return;
+        }
+        const transport = session.transport;
         await transport.handleRequest(req, res);
         return;
       }
@@ -726,6 +785,7 @@ async function startStreamableHttp() {
 
 async function startStdio() {
   const transport = new StdioServerTransport();
+  const server = createMcpServer();
   await server.connect(transport);
   console.error(
     `[axe-mcp] ready (stdio). axe extension: ${findAxeExtensionDir() ? "found" : "NOT FOUND"}. Default CDP: ${DEFAULT_ENDPOINT}. ` +
