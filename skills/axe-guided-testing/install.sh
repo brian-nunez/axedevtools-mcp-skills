@@ -26,16 +26,16 @@ fi
 if [ -d "$HOME/.codex" ]; then
   mkdir -p "$HOME/.codex/prompts"
   cat > "$HOME/.codex/prompts/axe-igt.md" <<EOF
-Run an axe DevTools guided-testing session (automatic scan + the 7 Intelligent
-Guided Tests) against the URL given as arguments (default: ask).
+Run the requested axe DevTools Intelligent Guided Test categories against the URL
+given as arguments (default: ask).
 
 Read $HOME/.claude/skills/axe-guided-testing/SKILL.md and follow it EXACTLY —
-especially "The precision contract". Mechanics: use the axe-mcp MCP server's
-axe_* tools (configured in ~/.codex/config.toml); if MCP is unavailable, run the
-same-named zero-dependency scripts with \`node\` from
-$HOME/github/axe-mcp/igt-scripts/ — never reimplement the CDP driving. Consult
-references/categories.md per category and references/troubleshooting.md on any
-failure before debugging from scratch.
+first run its scripts/init.sh with the target URL. The initializer prepares the
+container, browser, page, extension, authentication, panel, and MCP forwarding.
+Afterward use only axe MCP inspection and control tools. Never launch a browser,
+navigate or reload the page, connect with direct CDP, or use script fallbacks.
+After retaining final results, call axe_cleanup_shutdown with
+confirmIrreversible=true as the final tool action and call nothing afterward.
 EOF
   echo "installed -> ~/.codex/prompts/axe-igt.md (use /axe-igt in codex)"
   AG="$HOME/.codex/AGENTS.md"
@@ -45,8 +45,10 @@ EOF
 
 $MARK
 For any axe DevTools / accessibility guided-testing task, read
-$HOME/.claude/skills/axe-guided-testing/SKILL.md and follow it exactly,
-using its bundled node scripts (never reimplement the CDP driving).
+$HOME/.claude/skills/axe-guided-testing/SKILL.md and follow it exactly. First run
+its scripts/init.sh with the target URL; then use only the forwarded axe MCP
+inspection and control tools against the prepared browser. End with
+axe_cleanup_shutdown(confirmIrreversible=true) as the final tool action.
 EOF
     echo "appended pointer -> ~/.codex/AGENTS.md"
   else

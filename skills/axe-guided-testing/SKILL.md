@@ -1,7 +1,7 @@
 ---
 name: axe-guided-testing
 description: >-
-  Drive Deque's REAL axe DevTools browser extension — automatic scans AND all 7
+  Initialize and drive Deque's REAL axe DevTools browser extension — automatic scans and
   Intelligent Guided Tests (Images, Table, Keyboard, Modal Dialog, Interactive
   Elements, Structure, Forms) — end-to-end over the Chrome DevTools Protocol,
   answering every wizard question by inspecting the page DOM, taking screenshots,
@@ -9,8 +9,9 @@ description: >-
   axe DevTools, guided tests, IGT, "Runs: 0" on the axe dashboard, completing
   guided/manual accessibility test categories, driving the axe panel, or wants a
   full WCAG audit with the actual Deque extension rather than bare axe-core —
-  even if they don't say "guided" or "IGT". Requires the axe-mcp MCP server (its
-  axe_* tools) and a Chromium browser with the axe DevTools extension.
+  even if they don't say "guided" or "IGT". Always run this skill's init.sh with
+  the target URL first, use the forwarded axe_* MCP tools against the prepared
+  browser, and call axe_cleanup_shutdown as the final MCP action.
 ---
 
 # axe Guided Testing — drive the real extension with judged answers
@@ -20,20 +21,43 @@ Intelligent Guided Test wizards, and answer their judgment questions the way a
 careful human expert would: by **looking at the page and testing it**, never by
 guessing or blindly trusting the wizard's AI prefills.
 
-**Division of labor.** All PREDICTABLE mechanics (launching, trusted clicking,
+**Division of labor.** `scripts/init.sh` owns the container, browser, target-page
+navigation, extension, DevTools, authentication, and startup scan. All predictable
+test mechanics (trusted clicking,
 scraping, keyboard probes) are deterministic and provided by the **`axe-mcp` MCP
 server** — use its tools; never hand-roll CDP driving. This document and its
 references are the JUDGMENT layer: what to answer, when to refute the wizard's AI,
 and what to do when something unexpected happens.
 
-No MCP available? The tools are thin wrappers over zero-dependency Node scripts in
-the axe-mcp checkout (`~/github/axe-mcp/igt-scripts/`, override with
-`AXE_IGT_SCRIPTS_DIR`); run the same-named script with `node` and identical
-semantics. Everything below is written in tool terms.
+## Mandatory lifecycle
 
-`AXE_CDP_ENDPOINT` / the `cdpEndpoint` argument (default `http://127.0.0.1:9222`)
-points the tools at the browser — always `127.0.0.1`, never `localhost` (the debug
-port is IPv4-only).
+1. **First action — initialize.** Run the `scripts/init.sh` located beside this
+   `SKILL.md`, passing the user's target URL unchanged:
+
+   ```bash
+   "<absolute-skill-directory>/scripts/init.sh" "<target-url>"
+   ```
+
+   Wait for successful completion. Do not inspect files, call MCP tools, launch a
+   browser, or perform other task work before this command. If it fails, report
+   its output; do not reproduce its setup manually.
+2. **Middle — use only the prepared browser.** After initialization, use the axe
+   MCP tools to inspect and control the already-open page and axe panel. Never call
+   `setup_environment`, `axe_extension_login`, `axe_browser_start`,
+   `axe_browser_open_page`, `axe_browser_navigate`, or `axe_browser_stop`. Never
+   reload, navigate, or open another page. Do not use direct CDP, Playwright,
+   Selenium, raw browser automation, or Node/script fallbacks.
+3. **Last MCP action — clean up.** After collecting the final dashboard state and
+   all evidence needed for the report, call exactly:
+
+   ```text
+   axe_cleanup_shutdown({confirmIrreversible: true})
+   ```
+
+   This must be the final MCP/tool action of the session, including on a partial
+   run or test failure after successful initialization. It shuts down the browser
+   and MCP server; do not call any tool after it. Then return the report from the
+   evidence already collected.
 
 ## The precision contract (non-negotiable)
 
@@ -41,8 +65,9 @@ port is IPv4-only).
    (`axe_igt_state`), identify the subject element in the page DOM
    (`axe_page_eval`), and look at it (`axe_capture_page` / `axe_capture_element` /
    `axe_igt_highlight`). If the question is behavioral ("can it be done by
-   keyboard?", "does an error show?"), **test it empirically** (`axe_page_keys`,
-   `axe_form_probe`) — never answer behavior questions from markup alone.
+   keyboard?"), **test it empirically** (`axe_page_keys`) — never answer behavior
+   questions from markup alone. Do not navigate or create a disposable page to
+   test form submission.
 2. **Trust nothing the AI prefilled.** The wizards pre-answer many questions, and
    they are frequently wrong in BOTH directions (observed: 10 of 56 image answers
    wrong; 15 of 15 keyboard failures were false positives). Review every prefill;
@@ -61,13 +86,14 @@ port is IPv4-only).
 
 ## Workflow
 
-1. **Launch** (skip if a prepared browser is already on :9222): `axe_browser_start`
-   with the target URL. The profile keeps the axe Pro trial state — IGTs need
-   Pro/trial active.
-2. **Baseline automatic scan**: `axe_panel_scan` → totals + per-issue list.
-3. **Per category × 7**: `axe_igt_launch {category}` → loop: `axe_igt_state` →
+1. **Use the initialized page**: `init.sh` has already opened the URL, prepared
+   DevTools and axe, authenticated, and run the startup scan. Do not repeat setup.
+2. **Baseline automatic scan**: when the user requested scan results, call
+   `axe_panel_scan` without `navigateTo` → totals + per-issue list.
+3. **Requested categories**: run only categories named by the user; run all 7 for
+   a full audit. For each: `axe_igt_launch {category}` → loop: `axe_igt_state` →
    ground-truth (`axe_page_eval` / screenshots / `axe_page_keys` /
-   `axe_form_probe`) → `axe_igt_answer` → verify advanced. Follow
+   trusted page controls) → `axe_igt_answer` → verify advanced. Follow
    `references/categories.md` for each category's questions, validated answers
    methodology, and traps.
 4. **AI-review steps** (Keyboard, Interactive Elements): `axe_igt_review_rows` →
@@ -78,23 +104,17 @@ port is IPv4-only).
    save dialog appears) → `axe_igt_dash` must show the category at
    `Runs: 1 … Completed` — that line is the proof. The overall
    "Intelligent Guided Testing N% complete" rises ~14% per category.
-6. **Report**: per category — issues found, what YOU corrected (flips + evidence),
-   what was N/A and why; include the final dashboard screenshot.
+6. **Capture report evidence**: before cleanup, retain per-category issues, what
+   YOU corrected (flips + evidence), what was N/A and why, and the final dashboard.
+7. **Clean up**: call `axe_cleanup_shutdown {confirmIrreversible:true}`. Call no
+   tool afterward, then report from the retained evidence.
 
 ## When things go wrong
 
-Read `references/troubleshooting.md` FIRST — it maps every observed failure (stall
-at "Running axe", Start click missing, dead keyboard events, AI batch errors,
-`--load-extension` ignored, second DevTools window, oversized screenshots…) to root
-cause and fix. Each was debugged the hard way once; don't re-debug them.
-
-## Remote / sandboxed agents
-
-The browser runs on the HOST. From a sandbox, pass
-`cdpEndpoint: "http://<host-ip>:9222"` (or set `AXE_CDP_ENDPOINT`), launch the host
-browser with `AXE_EXTRA_ARGS="--remote-debugging-address=0.0.0.0"` or tunnel the
-port, and allow the sandbox→host:9222 network policy. Browser launching itself must
-happen on the host.
+Read `references/troubleshooting.md` FIRST. Recover only with axe tools against
+the initialized browser. If recovery would require setup, browser lifecycle,
+navigation, reload, or direct CDP, preserve the evidence gathered, call
+`axe_cleanup_shutdown` as the final tool action, and report the blocker.
 
 ## Vision-less agents
 

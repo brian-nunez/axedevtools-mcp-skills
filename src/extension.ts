@@ -146,6 +146,8 @@ export async function clickScanFullPage(endpoint: string, timeoutMs = 30_000) {
           .catch((e) => ({ ok: false, reason: e.message }));
         lastResult = result;
         if (result?.clicked) {
+          // Give the panel one second to transition into its scanning state before
+          // verifying the click and beginning completion polling.
           await sleep(1000);
           const verified = await cdp
             .evalIn(session, scanFullPageVerifyExpr())
@@ -186,6 +188,146 @@ export async function clickScanFullPage(endpoint: string, timeoutMs = 30_000) {
   }
 }
 
+export async function clickGuidedTestsAfterFullPageScan(endpoint: string, timeoutMs = 60_000) {
+  const cdp = await CDP.connect(endpoint);
+  const deadline = Date.now() + timeoutMs;
+  let lastState: any = null;
+  try {
+    while (Date.now() < deadline) {
+      const panel = await panelTarget(cdp, Date.now() + 2_500, 250);
+      if (!panel) {
+        await sleep(500);
+        continue;
+      }
+
+      let session: string | null = null;
+      try {
+        session = await cdp.attach(panel.targetId);
+        const state = await cdp
+          .evalIn(session, guidedTestsAfterScanExpr())
+          .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+          .catch((error) => ({ scanComplete: false, reason: error?.message || String(error) }));
+        lastState = state;
+
+        if (state?.scanComplete && state?.item) {
+          await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: state.item.x, y: state.item.y }, session);
+          await sleep(60);
+          await cdp.send(
+            "Input.dispatchMouseEvent",
+            { type: "mousePressed", x: state.item.x, y: state.item.y, button: "left", buttons: 1, clickCount: 1 },
+            session
+          );
+          await sleep(50);
+          await cdp.send(
+            "Input.dispatchMouseEvent",
+            { type: "mouseReleased", x: state.item.x, y: state.item.y, button: "left", buttons: 0, clickCount: 1 },
+            session
+          );
+          await sleep(750);
+
+          const verified = await cdp
+            .evalIn(session, guidedTestsSelectedExpr())
+            .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+            .catch((error) => ({ ok: false, reason: error?.message || String(error) }));
+          if (verified?.ok) {
+            await cdp.detach(session);
+            session = null;
+            return { ok: true, clicked: "Guided Tests", item: state.item, verified, targetUrl: panel.url };
+          }
+          lastState = { ...state, clicked: true, verified };
+        }
+
+        await cdp.detach(session);
+        session = null;
+      } catch (error: any) {
+        lastState = { ...(lastState || {}), reason: error?.message || String(error) };
+        if (session) await cdp.detach(session).catch(() => {});
+      }
+
+      await sleep(500);
+    }
+
+    return {
+      ok: false,
+      clicked: false,
+      reason: "Full Page Scan did not complete or Guided Tests was not selected before timeout",
+      lastState,
+    };
+  } finally {
+    cdp.close();
+  }
+}
+
+export async function clickGuidedTestsModalSave(endpoint: string, timeoutMs = 30_000) {
+  const cdp = await CDP.connect(endpoint);
+  const deadline = Date.now() + timeoutMs;
+  let lastState: any = null;
+  try {
+    while (Date.now() < deadline) {
+      const panel = await panelTarget(cdp, Date.now() + 2_500, 250);
+      if (!panel) {
+        await sleep(500);
+        continue;
+      }
+
+      let session: string | null = null;
+      try {
+        session = await cdp.attach(panel.targetId);
+        const state = await cdp
+          .evalIn(session, guidedTestsModalSaveExpr())
+          .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+          .catch((error) => ({ modalFound: false, reason: error?.message || String(error) }));
+        lastState = state;
+
+        if (state?.save) {
+          await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: state.save.x, y: state.save.y }, session);
+          await sleep(60);
+          await cdp.send(
+            "Input.dispatchMouseEvent",
+            { type: "mousePressed", x: state.save.x, y: state.save.y, button: "left", buttons: 1, clickCount: 1 },
+            session
+          );
+          await sleep(50);
+          await cdp.send(
+            "Input.dispatchMouseEvent",
+            { type: "mouseReleased", x: state.save.x, y: state.save.y, button: "left", buttons: 0, clickCount: 1 },
+            session
+          );
+          await sleep(750);
+
+          const verified = await cdp
+            .evalIn(session, guidedTestsModalClosedExpr())
+            .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+            .catch((error) => ({ ok: false, reason: error?.message || String(error) }));
+          if (verified?.ok) {
+            await cdp.detach(session);
+            session = null;
+            return { ok: true, saved: true, clicked: "Save", modal: state.modal, verified, targetUrl: panel.url };
+          }
+          lastState = { ...state, clicked: true, verified };
+        }
+
+        await cdp.detach(session);
+        session = null;
+      } catch (error: any) {
+        lastState = { ...(lastState || {}), reason: error?.message || String(error) };
+        if (session) await cdp.detach(session).catch(() => {});
+      }
+
+      await sleep(500);
+    }
+
+    return {
+      ok: false,
+      saved: false,
+      reason: "Guided Tests modal Save button was not clicked before timeout",
+      lastState,
+    };
+  } finally {
+    cdp.close();
+  }
+}
+
 export async function clickWeFoundSomethingSave(endpoint: string, timeoutMs = 60_000) {
   const cdp = await CDP.connect(endpoint);
   const deadline = Date.now() + timeoutMs;
@@ -206,13 +348,36 @@ export async function clickWeFoundSomethingSave(endpoint: string, timeoutMs = 60
           .evalIn(session, weFoundSomethingSaveExpr())
           .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
           .catch((e) => ({ ok: false, reason: e.message }));
+        lastResult = { ...result, targetUrl: panel.url };
+        if (result?.modalFound) sawModal = true;
+        if (result?.save) {
+          await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: result.save.x, y: result.save.y }, session);
+          await sleep(60);
+          await cdp.send(
+            "Input.dispatchMouseEvent",
+            { type: "mousePressed", x: result.save.x, y: result.save.y, button: "left", buttons: 1, clickCount: 1 },
+            session
+          );
+          await sleep(50);
+          await cdp.send(
+            "Input.dispatchMouseEvent",
+            { type: "mouseReleased", x: result.save.x, y: result.save.y, button: "left", buttons: 0, clickCount: 1 },
+            session
+          );
+          await sleep(750);
+          const verified = await cdp
+            .evalIn(session, weFoundSomethingClosedExpr())
+            .then((s) => (typeof s === "string" ? JSON.parse(s) : s))
+            .catch((e) => ({ ok: false, reason: e.message }));
+          if (verified?.ok) {
+            await cdp.detach(session);
+            session = null;
+            return { ok: true, attempted: true, saved: true, clicked: "Save", verified, targetUrl: panel.url };
+          }
+          lastResult = { ...lastResult, clicked: true, verified };
+        }
         await cdp.detach(session);
         session = null;
-        lastResult = { ...result, targetUrl: panel.url };
-        if (result?.attempted) sawModal = true;
-        if (result?.saved) {
-          return { ...result, targetUrl: panel.url };
-        }
       } catch {
         if (session) await cdp.detach(session).catch(() => { });
       }
@@ -504,10 +669,107 @@ function scanFullPageVerifyExpr() {
   })()`;
 }
 
-function weFoundSomethingSaveExpr() {
-  return `(async()=> {
+function guidedTestsAfterScanExpr() {
+  return `(()=>{
     ${DEEP}
-    const wait=ms=>new Promise(r=>setTimeout(r,ms));
+    const norm=s=>(s||'').replace(/\\s+/g,' ').trim();
+    const text=e=>norm((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'');
+    const visible=e=>{
+      const r=e.getBoundingClientRect();
+      const s=getComputedStyle(e);
+      return r.width>1 && r.height>1 && s.display!=='none' && s.visibility!=='hidden';
+    };
+    const pageText=norm(document.body ? document.body.innerText : '');
+    const scanComplete=/TOTAL ISSUES/i.test(pageText) && /Re-?run scan/i.test(pageText);
+    if(!scanComplete) {
+      return JSON.stringify({scanComplete:false, guidedTestsFound:false});
+    }
+
+    const candidates=deep('li,[role="listitem"]',document,[]).filter(visible);
+    let item=candidates.find(e=>/^Guided Tests$/i.test(text(e)));
+    if(!item) {
+      const label=deep('a,button,[role="button"],span,div',document,[])
+        .filter(visible)
+        .find(e=>/^Guided Tests$/i.test(text(e)));
+      item=label && (label.closest('li,[role="listitem"]') || label.closest('a,button,[role="button"]') || label);
+    }
+    if(!item || !visible(item)) {
+      return JSON.stringify({scanComplete:true, guidedTestsFound:false});
+    }
+    item.scrollIntoView({block:'center',inline:'center'});
+    const r=item.getBoundingClientRect();
+    return JSON.stringify({
+      scanComplete:true,
+      guidedTestsFound:true,
+      item:{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),text:text(item),tag:item.tagName,role:item.getAttribute('role')||''}
+    });
+  })()`;
+}
+
+function guidedTestsSelectedExpr() {
+  return `(()=>{
+    ${DEEP}
+    const norm=s=>(s||'').replace(/\\s+/g,' ').trim();
+    const pageText=norm(document.body ? document.body.innerText : '');
+    const guidedContent=/Intelligent Guided Tests/i.test(pageText) ||
+      (/Images/i.test(pageText) && /Keyboard/i.test(pageText) && /Structure/i.test(pageText) && /Forms/i.test(pageText));
+    return JSON.stringify({ok:guidedContent, guidedContent, text:pageText.slice(0,500)});
+  })()`;
+}
+
+function guidedTestsModalSaveExpr() {
+  return `(()=>{
+    ${DEEP}
+    const norm=s=>(s||'').replace(/\\s+/g,' ').trim();
+    const text=e=>norm((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'');
+    const visible=e=>{
+      const r=e.getBoundingClientRect();
+      const s=getComputedStyle(e);
+      return r.width>1 && r.height>1 && s.display!=='none' && s.visibility!=='hidden';
+    };
+    const dialogs=deep('[role="dialog"],[aria-modal="true"],dialog',document,[]).filter(visible);
+    let modal=dialogs.find(d=>deep('button,[role="button"]',d,[]).some(b=>visible(b) && /^Save$/i.test(text(b)) && !b.disabled));
+    let button=modal && deep('button,[role="button"]',modal,[]).find(b=>visible(b) && /^Save$/i.test(text(b)) && !b.disabled);
+    if(!button) {
+      const saves=deep('button,[role="button"]',document,[]).filter(b=>visible(b) && /^Save$/i.test(text(b)) && !b.disabled);
+      if(saves.length===1) {
+        button=saves[0];
+        modal=button.closest('[role="dialog"],[aria-modal="true"],dialog') || button.parentElement;
+      }
+    }
+    if(!button) {
+      return JSON.stringify({modalFound:dialogs.length>0,save:null,dialogs:dialogs.map(d=>text(d).slice(0,160))});
+    }
+    modal.setAttribute('data-axe-guided-tests-save-modal','true');
+    button.scrollIntoView({block:'center',inline:'center'});
+    const r=button.getBoundingClientRect();
+    return JSON.stringify({
+      modalFound:true,
+      modal:{text:text(modal).slice(0,240),tag:modal.tagName,role:modal.getAttribute&&modal.getAttribute('role')||''},
+      save:{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),text:text(button)}
+    });
+  })()`;
+}
+
+function guidedTestsModalClosedExpr() {
+  return `(()=>{
+    ${DEEP}
+    const norm=s=>(s||'').replace(/\\s+/g,' ').trim();
+    const text=e=>norm((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'');
+    const visible=e=>{
+      const r=e.getBoundingClientRect();
+      const s=getComputedStyle(e);
+      return r.width>1 && r.height>1 && s.display!=='none' && s.visibility!=='hidden';
+    };
+    const tracked=deep('[data-axe-guided-tests-save-modal="true"]',document,[]).find(visible);
+    const stillOpen=!!tracked && deep('button,[role="button"]',tracked,[]).some(b=>visible(b) && /^Save$/i.test(text(b)));
+    return JSON.stringify({ok:!stillOpen,closed:!stillOpen});
+  })()`;
+}
+
+function weFoundSomethingSaveExpr() {
+  return `(()=> {
+    ${DEEP}
     const norm=s=>(s||'').replace(/\\s+/g,' ').trim();
     const text=e=>norm((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'');
     const visible=e=>{
@@ -515,15 +777,9 @@ function weFoundSomethingSaveExpr() {
       const s=getComputedStyle(e);
       return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden';
     };
-    const deadline=Date.now()+5000;
-    let heading=null;
-    while(Date.now()<deadline){
-      heading=deep('h1,h2,h3,[role="heading"]',document,[]).find(h=>visible(h) && /^We found something$/i.test(text(h)));
-      if(heading) break;
-      await wait(150);
-    }
+    const heading=deep('h1,h2,h3,[role="heading"]',document,[]).find(h=>visible(h) && /^We found something$/i.test(text(h)));
     if(!heading) {
-      return JSON.stringify({ok:true, attempted:false, saved:false, reason:'We found something modal not present'});
+      return JSON.stringify({ok:true, modalFound:false, save:null});
     }
 
     const scopes=[
@@ -539,32 +795,40 @@ function weFoundSomethingSaveExpr() {
       button=deep('button,[role=button]',scope,[]).find(b=>visible(b) && /^Save$/i.test(text(b)) && !b.disabled);
       if(button) break;
     }
-    const buttonDeadline=Date.now()+5000;
-    while(!button && Date.now()<buttonDeadline){
-      for(const scope of scopes){
-        button=deep('button,[role=button]',scope,[]).find(b=>visible(b) && /^Save$/i.test(text(b)) && !b.disabled);
-        if(button) break;
-      }
-      if(!button) await wait(150);
-    }
     if(!button) {
       return JSON.stringify({
         ok:false,
-        attempted:true,
-        saved:false,
+        modalFound:true,
+        save:null,
         reason:'Save button not found',
         headingText:text(heading),
         buttons:deep('button,[role=button]',document,[]).map(b=>({text:text(b), disabled:!!b.disabled})).filter(b=>b.text).slice(0,30)
       });
     }
     button.scrollIntoView({block:'center', inline:'center'});
-    await wait(100);
-    try{button.focus();}catch(_){}
-    button.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
-    button.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
-    button.click();
-    await wait(1000);
-    return JSON.stringify({ok:true, attempted:true, saved:true, headingText:text(heading), clicked:text(button)});
+    const r=button.getBoundingClientRect();
+    return JSON.stringify({
+      ok:true,
+      modalFound:true,
+      save:{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),text:text(button)},
+      headingText:text(heading)
+    });
+  })()`;
+}
+
+function weFoundSomethingClosedExpr() {
+  return `(()=>{
+    ${DEEP}
+    const norm=s=>(s||'').replace(/\\s+/g,' ').trim();
+    const text=e=>norm((e.getAttribute&&e.getAttribute('aria-label'))||(e.innerText||e.textContent)||'');
+    const visible=e=>{
+      const r=e.getBoundingClientRect();
+      const s=getComputedStyle(e);
+      return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden';
+    };
+    const stillOpen=deep('h1,h2,h3,[role="heading"]',document,[])
+      .some(h=>visible(h) && /^We found something$/i.test(text(h)));
+    return JSON.stringify({ok:!stillOpen, closed:!stillOpen});
   })()`;
 }
 

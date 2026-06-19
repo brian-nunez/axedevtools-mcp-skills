@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { desktopBounds, startBrowser, waitForCdp } from "./browser.js";
-import { clickScanFullPage, completeAxeOnboarding, configureAxeSettings, dismissAxeAiPopup, reloadAxeDevToolsPanel, showAxeDevToolsPanel, signInToAxe } from "./extension.js";
+import { clickGuidedTestsAfterFullPageScan, clickGuidedTestsModalSave, clickScanFullPage, completeAxeOnboarding, configureAxeSettings, dismissAxeAiPopup, reloadAxeDevToolsPanel, showAxeDevToolsPanel, signInToAxe } from "./extension.js";
 import { waitForAndCloseInstallSuccess } from "./setup.js";
 import { CDP } from "./cdp.js";
 import { writeFile } from "node:fs/promises";
@@ -213,7 +213,9 @@ async function main() {
 
   let signIn: any = null;
   let scanFullPage: any = null;
+  let guidedTests: any = null;
   let weFoundSomethingSaveWatcher: any = null;
+  let guidedTestsModalSave: any = null;
   let postAuthTargetRestore: any = null;
   let postAuthAxePanel: any = null;
   let postAuthAxePanelReload: any = null;
@@ -264,19 +266,41 @@ async function main() {
           envNumber("AXE_WE_FOUND_SOMETHING_SAVE_WAIT_MS", 60_000)
         );
         console.error(`[axe-mcp] axe optional We found something watcher: ${JSON.stringify(weFoundSomethingSaveWatcher)}`);
+        guidedTests = await clickGuidedTestsAfterFullPageScan(
+          info.endpoint,
+          envNumber("AXE_GUIDED_TESTS_WAIT_MS", 60_000)
+        );
+        console.error(`[axe-mcp] axe Guided Tests selection: ${JSON.stringify(guidedTests)}`);
+        if (!guidedTests.ok) {
+          throw new Error(`Full Page Scan completed but Guided Tests was not selected: ${JSON.stringify(guidedTests)}`);
+        }
+        guidedTestsModalSave = await clickGuidedTestsModalSave(
+          info.endpoint,
+          envNumber("AXE_GUIDED_TESTS_MODAL_WAIT_MS", 30_000)
+        );
+        console.error(`[axe-mcp] axe Guided Tests modal Save: ${JSON.stringify(guidedTestsModalSave)}`);
+        if (!guidedTestsModalSave.saved) {
+          throw new Error(`Guided Tests modal Save was not completed: ${JSON.stringify(guidedTestsModalSave)}`);
+        }
       } else {
         weFoundSomethingSaveWatcher = { started: false, skipped: true, reason: "Scan full page did not complete" };
+        guidedTests = { ok: false, skipped: true, reason: "Scan full page did not start" };
+        guidedTestsModalSave = { ok: false, skipped: true, reason: "Guided Tests was not selected" };
         console.error(`[axe-mcp] axe optional We found something watcher skipped: ${JSON.stringify(weFoundSomethingSaveWatcher)}`);
       }
     } else {
       scanFullPage = { ok: false, skipped: true, reason: "sign-in did not complete" };
+      guidedTests = { ok: false, skipped: true, reason: "sign-in did not complete" };
       weFoundSomethingSaveWatcher = { started: false, skipped: true, reason: "sign-in did not complete" };
+      guidedTestsModalSave = { ok: false, skipped: true, reason: "sign-in did not complete" };
       console.error(`[axe-mcp] axe Scan full page click skipped: ${JSON.stringify(scanFullPage)}`);
     }
   } else {
     console.error("[axe-mcp] AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set; skipping sign-in");
     scanFullPage = { ok: false, skipped: true, reason: "AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set" };
+    guidedTests = { ok: false, skipped: true, reason: "AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set" };
     weFoundSomethingSaveWatcher = { started: false, skipped: true, reason: "AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set" };
+    guidedTestsModalSave = { ok: false, skipped: true, reason: "AXE_LOGIN_EMAIL/AXE_LOGIN_PASSWORD not set" };
   }
 
   // if (process.env.AXE_SERVER_URL) {
@@ -313,7 +337,9 @@ async function main() {
         postAuthAxePanel,
         postAuthAxePanelReload,
         scanFullPage,
+        guidedTests,
         weFoundSomethingSaveWatcher,
+        guidedTestsModalSave,
         prepared,
         readyAt: new Date().toISOString(),
       },

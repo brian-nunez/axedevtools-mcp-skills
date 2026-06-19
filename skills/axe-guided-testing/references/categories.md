@@ -57,7 +57,7 @@ mechanics below are axe-mcp tools.
    answer launcher questions, then the wizard walks focus-trap/Escape/labeling
    checks — test each with `axe_page_keys` (Tab cycles inside? Escape closes?
    focus returns to launcher?).
-2. Close any popup tabs you opened before proceeding.
+2. Do not open popup tabs while testing; stay on the page prepared by `init.sh`.
 
 ## Interactive Elements (3 steps, AI batch + review)
 1. Step 1 lists AI-found "interactive without proper markup" candidates
@@ -102,10 +102,11 @@ mechanics below are axe-mcp tools.
 3. **Radio sets = groups.** Group label: select the visible question text via
    `axe_page_click`; if none exists, Next with nothing selected — that records the
    missing-group-label issue (e.g. One-Way/Round-Trip/Multi-Planet).
-4. **Submit experiments NEVER on the IGT tab** — use
-   `axe_form_probe {url, clickSelector:"#submit", fills:["#field=@@junk@@"]}`.
-   Navigation with no visible error ⇒ answer "No". Defaulted radio groups/selects
-   can't be blank ⇒ "Not applicable". Don't answer Yes unless you SAW the error.
+4. **Do not submit if it may navigate** and do not use `axe_form_probe`, because it
+   opens another page. Use safe, non-navigating interactions on the prepared page
+   only. If behavior cannot be observed safely, choose Not applicable/untested
+   when offered and disclose the limitation. Don't answer Yes unless you SAW the
+   error.
 5. Final question (financial/legal/exam consequences) — for search forms: none;
    Next.
 6. Skip redundant per-field re-tests of radios whose group you already covered
@@ -115,3 +116,5 @@ mechanics below are axe-mcp tools.
 After each Finish (+ Save if offered): `axe_igt_dash` must show the category at
 `Runs: 1 … Completed`, and the overall "Intelligent Guided Testing N% complete"
 should rise (7 categories ⇒ ~14% each). Screenshot the final 100% dashboard.
+Retain these results before the mandatory final
+`axe_cleanup_shutdown {confirmIrreversible:true}` call; no tool can run afterward.
