@@ -19,6 +19,26 @@ export interface CaptureResult {
   meta: any;
 }
 
+export function normalizePngBase64(value: unknown): string {
+  if (typeof value !== "string") throw new Error("Screenshot payload is not a base64 string.");
+  const normalized = value
+    .trim()
+    .replace(/^data:image\/png;base64,/i, "")
+    .replace(/\s+/g, "")
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+  if (!normalized || !/^[A-Za-z0-9+/]*={0,2}$/.test(normalized) || normalized.length % 4 === 1) {
+    throw new Error("Screenshot payload is not valid base64.");
+  }
+
+  const bytes = Buffer.from(normalized, "base64");
+  const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (bytes.length < pngSignature.length || pngSignature.some((byte, index) => bytes[index] !== byte)) {
+    throw new Error("Screenshot payload is not a valid PNG image.");
+  }
+  return bytes.toString("base64");
+}
+
 export async function captureElement(endpoint: string, selector: string, urlContains?: string): Promise<CaptureResult> {
   const cdp = await CDP.connect(endpoint);
   try {
@@ -49,7 +69,7 @@ export async function captureElement(endpoint: string, selector: string, urlCont
       { format: "png", clip, captureBeyondViewport: false },
       s
     );
-    return { base64: data as string, meta };
+    return { base64: normalizePngBase64(data), meta };
   } finally {
     cdp.close();
   }
@@ -64,7 +84,7 @@ export async function capturePage(endpoint: string, fullPage = false, urlContain
       { format: "png", captureBeyondViewport: fullPage },
       s
     );
-    return { base64: data as string, meta: { fullPage } };
+    return { base64: normalizePngBase64(data), meta: { fullPage } };
   } finally {
     cdp.close();
   }
